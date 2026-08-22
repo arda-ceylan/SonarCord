@@ -92,7 +92,7 @@ As soon as Discord (or any user-defined application) spawns an audio playback se
 ### Build via Visual Studio
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/SonarCord.git
+   git clone https://github.com/arda-ceylan/SonarCord.git
    cd SonarCord
    ```
 2. Open `SonarCord.sln` in Visual Studio.
