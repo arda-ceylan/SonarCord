@@ -75,7 +75,7 @@ As soon as Discord (or any user-defined application) spawns an audio playback se
 
 ## 📥 Installation
 
-1. Download the latest `SonarCord.exe` from the [Releases](https://github.com/weilan/SonarCord/releases) section.
+1. Download the latest `SonarCord.exe` from the [Releases](https://github.com/arda-ceylan/SonarCord/releases) section.
 2. Run `SonarCord.exe`.
 3. Select your audio device (e.g., *SteelSeries Sonar - Microphone*), toggle **Active**, and click to arm the applications you want to mute.
 4. Minimize to tray and enjoy crystal-clear streams without echoes!
