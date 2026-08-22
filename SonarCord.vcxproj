@@ -93,6 +93,7 @@
     <ClInclude Include="src\AppUI.h" />
     <ClInclude Include="src\AudioSessionMuter.h" />
     <ClInclude Include="src\Config.h" />
+    <ClInclude Include="src\Utils.h" />
     <ClInclude Include="src\resource.h" />
     <ClInclude Include="src\imgui\imconfig.h" />
     <ClInclude Include="src\imgui\imgui.h" />

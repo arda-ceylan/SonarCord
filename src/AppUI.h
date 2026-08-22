@@ -6,8 +6,10 @@
 
 #include "AudioSessionMuter.h"
 #include "Config.h"
+#include "Utils.h"
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 class AppUI {
 public:
@@ -36,7 +38,21 @@ private:
     bool m_startMinimized = false;
     bool m_requestMinimizeToTray = false;
 
+    // Cached sessions state
+    std::vector<ActiveSessionInfo> m_cachedSessions;
+    float m_sessionUpdateTimer = 0.0f;
+
+    // Toggle animation states
+    std::unordered_map<std::string, float> m_toggleAnimMap;
+
     void SyncUIFromConfig();
     void SaveConfigFromUI();
     bool DrawToggleSwitch(const char* id, bool* v);
+
+    // Modular Card Renderers
+    void RenderHeaderCard();
+    void RenderDeviceCard();
+    void RenderAppsCard();
+    void RenderSettingsCard();
+    void RenderActivityCard();
 };

@@ -16,6 +16,7 @@
 #include "AudioSessionMuter.h"
 #include "Config.h"
 #include "AppUI.h"
+#include "Utils.h"
 #include "resource.h"
 
 #pragma comment(lib, "d3d11.lib")
@@ -26,6 +27,9 @@
 #pragma comment(lib, "Dwmapi.lib")
 
 #define WM_TRAYICON (WM_USER + 100)
+#define WM_APP_MUTE_NOTIFY (WM_APP + 1)
+#define WM_APP_DEVICE_CHANGED (WM_APP + 2)
+
 #define ID_TRAY_SHOW 1001
 #define ID_TRAY_AUTOSTART 1002
 #define ID_TRAY_EXIT 1003
@@ -37,6 +41,12 @@
 #define DWMWA_CAPTION_COLOR 35
 #endif
 
+// Notification payload sent from background MTA thread to STA UI thread
+struct MuteNotificationPayload {
+    std::wstring procName;
+    DWORD pid = 0;
+};
+
 // Global DirectX 11 objects
 static ID3D11Device*            g_pd3dDevice = nullptr;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
@@ -47,7 +57,8 @@ static HWND                     g_hWnd = nullptr;
 static NOTIFYICONDATAW          g_nid = { 0 };
 static bool                     g_isWindowVisible = true;
 
-// AppConfig reference (for tray)
+// AppUI reference for thread messages
+static AppUI*                   g_pGlobalAppUI = nullptr;
 static AppConfig*               g_pGlobalConfig = nullptr;
 
 // Function prototypes
@@ -81,8 +92,8 @@ void ShowTrayNotification(const std::wstring& title, const std::wstring& message
     
     NOTIFYICONDATAW nid = g_nid;
     nid.uFlags |= NIF_INFO;
-    wcscpy_s(nid.szInfoTitle, title.c_str());
-    wcscpy_s(nid.szInfo, message.c_str());
+    wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
+    wcsncpy_s(nid.szInfo, message.c_str(), _TRUNCATE);
     nid.dwInfoFlags = NIIF_INFO;
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
@@ -107,7 +118,7 @@ void ShowTrayMenu(HWND hWnd) {
         if (g_isWindowVisible) {
             ShowWindow(hWnd, SW_HIDE);
             g_isWindowVisible = false;
-            SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+            Utils::TrimWorkingSet();
         } else {
             ShowWindow(hWnd, SW_SHOW);
             SetForegroundWindow(hWnd);
@@ -126,6 +137,18 @@ void ShowTrayMenu(HWND hWnd) {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nShowCmd) {
+    // 0. Single Instance Check via Named Mutex
+    HANDLE hSingleInstanceMutex = CreateMutexW(NULL, TRUE, L"Local\\SonarCord_SingleInstance_Mutex");
+    if (hSingleInstanceMutex != NULL && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND existingWnd = FindWindowW(L"SonarCordClass", NULL);
+        if (existingWnd) {
+            ShowWindow(existingWnd, SW_SHOW);
+            SetForegroundWindow(existingWnd);
+        }
+        CloseHandle(hSingleInstanceMutex);
+        return 0;
+    }
+
     // 1. Load Configuration
     AppConfig config;
     config.Load();
@@ -135,16 +158,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     AudioSessionMuter muter;
     if (!muter.Initialize()) {
         MessageBoxW(NULL, L"Failed to initialize Audio Session Muter!", L"SonarCord Error", MB_ICONERROR);
+        if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
         return 1;
     }
 
     muter.SetEnabled(config.isEnabled);
     muter.SetTargetProcess(config.targetProcessName);
 
-    // Notification Callback
+    // Notification Callback: Post to UI thread to guarantee COM/Tray thread-safety
     muter.SetNotificationCallback([](const std::wstring& procName, DWORD pid) {
-        std::wstring msg = procName + L" (PID: " + std::to_wstring(pid) + L") session was automatically muted.";
-        ShowTrayNotification(L"SonarCord", msg);
+        if (g_hWnd) {
+            auto* payload = new MuteNotificationPayload{ procName, pid };
+            if (PostMessageW(g_hWnd, WM_APP_MUTE_NOTIFY, reinterpret_cast<WPARAM>(payload), 0) == 0) {
+                delete payload;
+            }
+        }
+    });
+
+    // Device Hotplug Callback: Post to UI thread
+    muter.SetDeviceChangedCallback([]() {
+        if (g_hWnd) {
+            PostMessageW(g_hWnd, WM_APP_DEVICE_CHANGED, 0, 0);
+        }
     });
 
     // 3. Create Win32 Window
@@ -152,7 +187,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
     wc.hIconSm = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
     if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    RegisterClassExW(&wc);
+    
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        MessageBoxW(NULL, L"Failed to register window class!", L"SonarCord Error", MB_ICONERROR);
+        muter.Shutdown();
+        if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
+        return 1;
+    }
 
     int winWidth = 480;
     int winHeight = 650;
@@ -166,6 +207,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                            posX, posY, winWidth, winHeight, 
                            NULL, NULL, wc.hInstance, NULL);
 
+    if (!g_hWnd) {
+        MessageBoxW(NULL, L"Failed to create window!", L"SonarCord Error", MB_ICONERROR);
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
+        muter.Shutdown();
+        if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
+        return 1;
+    }
+
     // Dark Titlebar (DWM Dark Mode)
     BOOL darkMode = TRUE;
     DwmSetWindowAttribute(g_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
@@ -174,7 +223,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     if (!CreateDeviceD3D(g_hWnd)) {
         CleanupDeviceD3D();
+        DestroyWindow(g_hWnd);
         UnregisterClassW(wc.lpszClassName, wc.hInstance);
+        muter.Shutdown();
+        if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
         return 1;
     }
 
@@ -183,16 +235,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr; // Disable dummy imgui.ini file generation!
+    io.IniFilename = nullptr; // Disable dummy imgui.ini file generation
 
     // Load Segoe UI Font with upward baseline adjustment to center text vertically
     ImFontConfig fontConfig;
     fontConfig.OversampleH = 3;
     fontConfig.OversampleV = 3;
     fontConfig.PixelSnapH = false;
-    fontConfig.GlyphOffset.y = -1.0f; // Perfect vertical optical centering for Segoe UI
+    fontConfig.GlyphOffset.y = -1.0f; // Optical vertical centering for Segoe UI
     
-    const char* fontPath = "C:\\Windows\\Fonts\\segoeui.ttf";
+    char fontPath[MAX_PATH];
+    if (!ExpandEnvironmentStringsA("%WINDIR%\\Fonts\\segoeui.ttf", fontPath, MAX_PATH)) {
+        strcpy_s(fontPath, "C:\\Windows\\Fonts\\segoeui.ttf");
+    }
+    
     FILE* f = nullptr;
     if (fopen_s(&f, fontPath, "r") == 0 && f != nullptr) {
         fclose(f);
@@ -207,6 +263,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // 5. Initialize UI Controller
     AppUI appUI(&muter, &config);
     appUI.Initialize();
+    g_pGlobalAppUI = &appUI;
 
     // Initialize System Tray Icon
     InitTrayIcon(g_hWnd);
@@ -218,7 +275,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     if (startMinimized) {
         ShowWindow(g_hWnd, SW_HIDE);
         g_isWindowVisible = false;
-        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+        Utils::TrimWorkingSet();
     } else {
         ShowWindow(g_hWnd, SW_SHOWDEFAULT);
         UpdateWindow(g_hWnd);
@@ -237,9 +294,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             }
             if (done) break;
 
-            // If window was hidden during message processing (e.g. WM_CLOSE or minimize):
+            // If window was hidden during message processing
             if (!g_isWindowVisible) {
-                SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+                Utils::TrimWorkingSet();
                 continue;
             }
 
@@ -247,7 +304,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                 appUI.ResetMinimizeRequest();
                 ShowWindow(g_hWnd, SW_HIDE);
                 g_isWindowVisible = false;
-                SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+                Utils::TrimWorkingSet();
                 continue;
             }
 
@@ -268,16 +325,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         } else {
             // Suspended / Waiting in Tray (0.00% CPU usage & minimal RAM)
             BOOL bRet = GetMessage(&msg, NULL, 0, 0);
-            if (bRet > 0) {
+            if (bRet == 0) {
+                done = true; // WM_QUIT
+            } else if (bRet == -1) {
+                done = true; // Error occurred
+            } else {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
-            } else {
-                done = true;
             }
         }
     }
 
     // Cleanup
+    g_pGlobalAppUI = nullptr;
+    g_pGlobalConfig = nullptr;
+
     RemoveTrayIcon();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -287,7 +349,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     DestroyWindow(g_hWnd);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
 
-    g_pGlobalConfig = nullptr;
+    muter.Shutdown();
+
+    if (hSingleInstanceMutex) {
+        CloseHandle(hSingleInstanceMutex);
+    }
     return 0;
 }
 
@@ -354,6 +420,23 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return true;
 
     switch (msg) {
+    case WM_APP_MUTE_NOTIFY: {
+        auto* payload = reinterpret_cast<MuteNotificationPayload*>(wParam);
+        if (payload) {
+            std::wstring msgText = payload->procName + L" (PID: " + std::to_wstring(payload->pid) + L") session was automatically muted.";
+            ShowTrayNotification(L"SonarCord", msgText);
+            delete payload;
+        }
+        return 0;
+    }
+
+    case WM_APP_DEVICE_CHANGED: {
+        if (g_pGlobalAppUI) {
+            g_pGlobalAppUI->RefreshDevices();
+        }
+        return 0;
+    }
+
     case WM_SIZE:
         if (g_pd3dDevice != NULL && wParam != SIZE_MINIMIZED) {
             CleanupRenderTarget();
@@ -363,7 +446,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (wParam == SIZE_MINIMIZED) {
             ShowWindow(hWnd, SW_HIDE);
             g_isWindowVisible = false;
-            SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+            Utils::TrimWorkingSet();
         }
         return 0;
 
@@ -371,7 +454,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if ((wParam & 0xfff0) == SC_MINIMIZE) {
             ShowWindow(hWnd, SW_HIDE);
             g_isWindowVisible = false;
-            SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+            Utils::TrimWorkingSet();
             return 0;
         }
         break;
@@ -379,7 +462,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CLOSE:
         ShowWindow(hWnd, SW_HIDE);
         g_isWindowVisible = false;
-        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+        Utils::TrimWorkingSet();
         return 0;
 
     case WM_TRAYICON:
@@ -387,7 +470,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (g_isWindowVisible) {
                 ShowWindow(hWnd, SW_HIDE);
                 g_isWindowVisible = false;
-                SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+                Utils::TrimWorkingSet();
             } else {
                 ShowWindow(hWnd, SW_SHOW);
                 SetForegroundWindow(hWnd);

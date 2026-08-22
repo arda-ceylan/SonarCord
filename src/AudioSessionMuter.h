@@ -15,6 +15,8 @@
 #include <mutex>
 #include <functional>
 
+#include "Utils.h"
+
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "Psapi.lib")
 
@@ -35,7 +37,7 @@ struct ActiveSessionInfo {
 struct LogEntry {
     std::string timestamp;
     std::string message;
-    bool isAction;
+    bool isAction = false;
 };
 
 class AudioSessionNotificationHandler;
@@ -45,6 +47,9 @@ class AudioSessionMuter {
 public:
     AudioSessionMuter();
     ~AudioSessionMuter();
+
+    AudioSessionMuter(const AudioSessionMuter&) = delete;
+    AudioSessionMuter& operator=(const AudioSessionMuter&) = delete;
 
     bool Initialize();
     void Shutdown();
@@ -84,9 +89,15 @@ public:
     std::vector<LogEntry> GetLogs();
     void ClearLogs();
 
-    // Callback notification listener
+    // Callback listeners
     void SetNotificationCallback(std::function<void(const std::wstring& procName, DWORD pid)> cb) {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
         m_onMutedCallback = cb;
+    }
+
+    void SetDeviceChangedCallback(std::function<void()> cb) {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        m_onDeviceChangedCallback = cb;
     }
 
 private:
@@ -94,6 +105,7 @@ private:
     std::string GetCurrentTimestamp();
 
     bool m_isEnabled = false;
+    bool m_comInitialized = false;
     std::vector<std::wstring> m_targetProcesses;
     std::wstring m_activeDeviceName = L"";
     std::wstring m_lastRequestedDevice = L"Sonar - Microphone";
@@ -109,6 +121,7 @@ private:
     mutable std::recursive_mutex m_mutex;
     std::vector<LogEntry> m_logs;
     std::function<void(const std::wstring&, DWORD)> m_onMutedCallback;
+    std::function<void()> m_onDeviceChangedCallback;
 };
 
 class AudioSessionNotificationHandler : public IAudioSessionNotification {
@@ -116,6 +129,10 @@ class AudioSessionNotificationHandler : public IAudioSessionNotification {
     AudioSessionMuter* m_pParent = nullptr;
 public:
     AudioSessionNotificationHandler(AudioSessionMuter* parent) : m_pParent(parent) {}
+    ~AudioSessionNotificationHandler() = default;
+
+    AudioSessionNotificationHandler(const AudioSessionNotificationHandler&) = delete;
+    AudioSessionNotificationHandler& operator=(const AudioSessionNotificationHandler&) = delete;
 
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&m_refCount); }
     ULONG STDMETHODCALLTYPE Release() override {
@@ -141,6 +158,10 @@ class AudioEndpointNotificationHandler : public IMMNotificationClient {
     AudioSessionMuter* m_pParent = nullptr;
 public:
     AudioEndpointNotificationHandler(AudioSessionMuter* parent) : m_pParent(parent) {}
+    ~AudioEndpointNotificationHandler() = default;
+
+    AudioEndpointNotificationHandler(const AudioEndpointNotificationHandler&) = delete;
+    AudioEndpointNotificationHandler& operator=(const AudioEndpointNotificationHandler&) = delete;
 
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&m_refCount); }
     ULONG STDMETHODCALLTYPE Release() override {

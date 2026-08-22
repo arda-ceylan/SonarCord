@@ -3,19 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "AudioSessionMuter.h"
-#include <psapi.h>
 #include <chrono>
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
-
-static std::string WStringToUtf8(const std::wstring& wstr) {
-    if (wstr.empty()) return "";
-    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
-    std::string strTo(sizeNeeded, 0);
-    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], sizeNeeded, NULL, NULL);
-    return strTo;
-}
 
 AudioSessionMuter::AudioSessionMuter() {
 }
@@ -25,35 +16,55 @@ AudioSessionMuter::~AudioSessionMuter() {
 }
 
 bool AudioSessionMuter::Initialize() {
-    HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (SUCCEEDED(hr)) {
+        m_comInitialized = true;
+    } else if (hr == RPC_E_CHANGED_MODE) {
+        m_comInitialized = false; // COM was initialized elsewhere in MTA mode
+    } else {
         AddLog("ERROR: Failed to initialize COM!");
         return false;
     }
 
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, IID_PPV_ARGS(&m_pEnumerator));
-    if (FAILED(hr)) {
+    if (FAILED(hr) || !m_pEnumerator) {
         AddLog("ERROR: Failed to create MMDeviceEnumerator!");
+        if (m_comInitialized) {
+            CoUninitialize();
+            m_comInitialized = false;
+        }
         return false;
     }
 
     // Register audio endpoint listener (Detects SteelSeries Sonar / hotplugged devices when Windows boots)
-    m_pEndpointHandler = new AudioEndpointNotificationHandler(this);
-    m_pEnumerator->RegisterEndpointNotificationCallback(m_pEndpointHandler);
+    if (!m_pEndpointHandler) {
+        m_pEndpointHandler = new AudioEndpointNotificationHandler(this);
+        m_pEnumerator->RegisterEndpointNotificationCallback(m_pEndpointHandler);
+    }
 
     AddLog("Audio controller initialized.");
     return true;
 }
 
 void AudioSessionMuter::Shutdown() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
     Detach();
+
     if (m_pEnumerator && m_pEndpointHandler) {
         m_pEnumerator->UnregisterEndpointNotificationCallback(m_pEndpointHandler);
         m_pEndpointHandler->Release();
         m_pEndpointHandler = nullptr;
     }
+
     m_pEnumerator.Reset();
-    CoUninitialize();
+
+    if (m_comInitialized) {
+        CoUninitialize();
+        m_comInitialized = false;
+    }
 }
 
 void AudioSessionMuter::SetEnabled(bool enable) {
@@ -74,6 +85,7 @@ bool AudioSessionMuter::IsEnabled() const {
 }
 
 std::vector<AudioDeviceInfo> AudioSessionMuter::EnumerateRenderDevices() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     std::vector<AudioDeviceInfo> devices;
     if (!m_pEnumerator) return devices;
 
@@ -121,15 +133,14 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
     if (!m_pEnumerator) return false;
 
     ComPtr<IMMDeviceCollection> pCollection;
-    if (FAILED(m_pEnumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &pCollection))) {
+    if (FAILED(m_pEnumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &pCollection)) || !pCollection) {
         return false;
     }
 
     UINT count = 0;
     pCollection->GetCount(&count);
 
-    std::wstring lowerTarget = targetNameOrSubstring;
-    std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(), ::towlower);
+    std::wstring lowerTarget = Utils::ToLower(targetNameOrSubstring);
 
     for (UINT i = 0; i < count; ++i) {
         ComPtr<IMMDevice> pDevice;
@@ -140,8 +151,7 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
                 PropVariantInit(&varName);
                 if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &varName)) && varName.pwszVal) {
                     std::wstring name = varName.pwszVal;
-                    std::wstring lowerName = name;
-                    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
+                    std::wstring lowerName = Utils::ToLower(name);
 
                     if (lowerName.find(lowerTarget) != std::wstring::npos) {
                         m_pCurrentDevice = pDevice;
@@ -156,13 +166,13 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
     }
 
     if (!m_pCurrentDevice) {
-        AddLog("Device not found: " + WStringToUtf8(targetNameOrSubstring));
+        AddLog("Device not found: " + Utils::WStringToUtf8(targetNameOrSubstring));
         m_isAttached = false;
         return false;
     }
 
     // AudioSessionManager2
-    HRESULT hr = m_pCurrentDevice->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, NULL, (void**)&m_pSessionManager);
+    HRESULT hr = m_pCurrentDevice->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, NULL, (void**)m_pSessionManager.ReleaseAndGetAddressOf());
     if (FAILED(hr) || !m_pSessionManager) {
         AddLog("ERROR: Failed to obtain SessionManager2!");
         m_pCurrentDevice.Reset();
@@ -175,7 +185,7 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
     m_pSessionManager->RegisterSessionNotification(m_pNotificationHandler);
 
     m_isAttached = true;
-    AddLog("Attached to device: " + WStringToUtf8(m_activeDeviceName));
+    AddLog("Attached to device: " + Utils::WStringToUtf8(m_activeDeviceName));
 
     if (m_isEnabled) {
         ScanAndMuteExistingSessions();
@@ -196,23 +206,32 @@ void AudioSessionMuter::Detach() {
 }
 
 void AudioSessionMuter::OnAudioEndpointsChanged() {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    // If not currently attached, try auto-attaching to our target device!
-    if (!m_isAttached && !m_lastRequestedDevice.empty()) {
-        AttachToDevice(m_lastRequestedDevice);
+    std::function<void()> devCallback;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        devCallback = m_onDeviceChangedCallback;
+
+        // If not currently attached, try auto-attaching to requested target device
+        if (!m_isAttached && !m_lastRequestedDevice.empty()) {
+            AttachToDevice(m_lastRequestedDevice);
+        }
+    }
+
+    if (devCallback) {
+        devCallback();
     }
 }
 
 void AudioSessionMuter::SetTargetProcess(const std::wstring& procName) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_targetProcesses.clear();
+    
     std::wstringstream ss(procName);
     std::wstring item;
-    while (std::getline(ss, item, L',')) {
-        size_t start = item.find_first_not_of(L" \t");
-        size_t end = item.find_last_not_of(L" \t");
-        if (start != std::wstring::npos && end != std::wstring::npos) {
-            m_targetProcesses.push_back(item.substr(start, end - start + 1));
+    while (std::getline(ss, item, L'|')) {
+        std::wstring trimmed = Utils::Trim(item);
+        if (!trimmed.empty()) {
+            m_targetProcesses.push_back(trimmed);
         }
     }
     if (m_isEnabled) {
@@ -225,14 +244,20 @@ std::wstring AudioSessionMuter::GetTargetProcess() const {
     std::wstringstream ss;
     for (size_t i = 0; i < m_targetProcesses.size(); ++i) {
         ss << m_targetProcesses[i];
-        if (i + 1 < m_targetProcesses.size()) ss << L", ";
+        if (i + 1 < m_targetProcesses.size()) ss << L"|";
     }
     return ss.str();
 }
 
 void AudioSessionMuter::SetTargetProcessList(const std::vector<std::wstring>& list) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_targetProcesses = list;
+    m_targetProcesses.clear();
+    for (const auto& item : list) {
+        std::wstring trimmed = Utils::Trim(item);
+        if (!trimmed.empty()) {
+            m_targetProcesses.push_back(trimmed);
+        }
+    }
     if (m_isEnabled) {
         ScanAndMuteExistingSessions();
     }
@@ -245,17 +270,15 @@ std::vector<std::wstring> AudioSessionMuter::GetTargetProcessList() const {
 
 void AudioSessionMuter::AddTargetProcess(const std::wstring& procName) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    std::wstring lowerProc = procName;
-    std::transform(lowerProc.begin(), lowerProc.end(), lowerProc.begin(), ::towlower);
+    std::wstring trimmed = Utils::Trim(procName);
+    if (trimmed.empty()) return;
 
     for (const auto& item : m_targetProcesses) {
-        std::wstring lowerItem = item;
-        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::towlower);
-        if (lowerItem == lowerProc) return;
+        if (Utils::ProcessNamesMatch(item, trimmed)) return;
     }
 
-    m_targetProcesses.push_back(procName);
-    AddLog("Added to target list: " + WStringToUtf8(procName));
+    m_targetProcesses.push_back(trimmed);
+    AddLog("Added to target list: " + Utils::WStringToUtf8(trimmed));
     if (m_isEnabled) {
         ScanAndMuteExistingSessions();
     }
@@ -263,27 +286,23 @@ void AudioSessionMuter::AddTargetProcess(const std::wstring& procName) {
 
 void AudioSessionMuter::RemoveTargetProcess(const std::wstring& procName) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    std::wstring lowerProc = procName;
-    std::transform(lowerProc.begin(), lowerProc.end(), lowerProc.begin(), ::towlower);
+    std::wstring trimmed = Utils::Trim(procName);
+    if (trimmed.empty()) return;
 
     auto it = std::remove_if(m_targetProcesses.begin(), m_targetProcesses.end(), [&](const std::wstring& item) {
-        std::wstring lowerItem = item;
-        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::towlower);
-        return lowerItem == lowerProc;
+        return Utils::ProcessNamesMatch(item, trimmed);
     });
 
     if (it != m_targetProcesses.end()) {
         m_targetProcesses.erase(it, m_targetProcesses.end());
-        AddLog("Removed from target list: " + WStringToUtf8(procName));
-        UnmuteProcess(procName);
+        AddLog("Removed from target list: " + Utils::WStringToUtf8(trimmed));
+        UnmuteProcess(trimmed);
     }
 }
 
 void AudioSessionMuter::UnmuteProcess(const std::wstring& procName) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_pSessionManager) return;
-
-    std::wstring lowerProc = procName;
-    std::transform(lowerProc.begin(), lowerProc.end(), lowerProc.begin(), ::towlower);
 
     ComPtr<IAudioSessionEnumerator> pSessionEnum;
     if (SUCCEEDED(m_pSessionManager->GetSessionEnumerator(&pSessionEnum)) && pSessionEnum) {
@@ -291,9 +310,9 @@ void AudioSessionMuter::UnmuteProcess(const std::wstring& procName) {
         pSessionEnum->GetCount(&sessionCount);
         for (int i = 0; i < sessionCount; ++i) {
             ComPtr<IAudioSessionControl> pSessionControl;
-            if (SUCCEEDED(pSessionEnum->GetSession(i, &pSessionControl))) {
+            if (SUCCEEDED(pSessionEnum->GetSession(i, &pSessionControl)) && pSessionControl) {
                 ComPtr<IAudioSessionControl2> pSessionControl2;
-                if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pSessionControl2)))) {
+                if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pSessionControl2))) && pSessionControl2) {
                     DWORD pid = 0;
                     pSessionControl2->GetProcessId(&pid);
                     if (pid != 0) {
@@ -302,18 +321,13 @@ void AudioSessionMuter::UnmuteProcess(const std::wstring& procName) {
                             WCHAR processPath[MAX_PATH];
                             DWORD size = MAX_PATH;
                             if (QueryFullProcessImageNameW(hProcess, 0, processPath, &size)) {
-                                std::wstring fullPath(processPath);
-                                size_t lastSlash = fullPath.find_last_of(L"\\/");
-                                std::wstring actualProcName = (lastSlash != std::wstring::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
-                                
-                                std::wstring lowerFound = actualProcName;
-                                std::transform(lowerFound.begin(), lowerFound.end(), lowerFound.begin(), ::towlower);
+                                std::wstring actualProcName = Utils::ExtractFileName(processPath);
 
-                                if (lowerFound.find(lowerProc) != std::wstring::npos) {
+                                if (Utils::ProcessNamesMatch(actualProcName, procName)) {
                                     ComPtr<ISimpleAudioVolume> pVolume;
-                                    if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pVolume)))) {
+                                    if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pVolume))) && pVolume) {
                                         pVolume->SetMute(FALSE, NULL);
-                                        AddLog("UNMUTED: " + WStringToUtf8(actualProcName) + " (PID: " + std::to_string(pid) + ")", true);
+                                        AddLog("UNMUTED: " + Utils::WStringToUtf8(actualProcName) + " (PID: " + std::to_string(pid) + ")", true);
                                     }
                                 }
                             }
@@ -327,6 +341,7 @@ void AudioSessionMuter::UnmuteProcess(const std::wstring& procName) {
 }
 
 void AudioSessionMuter::UnmuteAllTargets() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_pSessionManager) return;
 
     for (const auto& target : m_targetProcesses) {
@@ -335,6 +350,7 @@ void AudioSessionMuter::UnmuteAllTargets() {
 }
 
 bool AudioSessionMuter::IsAttached() const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     return m_isAttached;
 }
 
@@ -354,9 +370,9 @@ std::vector<ActiveSessionInfo> AudioSessionMuter::GetActiveSessions() {
         pSessionEnum->GetCount(&sessionCount);
         for (int i = 0; i < sessionCount; ++i) {
             ComPtr<IAudioSessionControl> pSessionControl;
-            if (SUCCEEDED(pSessionEnum->GetSession(i, &pSessionControl))) {
+            if (SUCCEEDED(pSessionEnum->GetSession(i, &pSessionControl)) && pSessionControl) {
                 ComPtr<IAudioSessionControl2> pSessionControl2;
-                if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pSessionControl2)))) {
+                if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pSessionControl2))) && pSessionControl2) {
                     DWORD pid = 0;
                     pSessionControl2->GetProcessId(&pid);
 
@@ -367,9 +383,7 @@ std::vector<ActiveSessionInfo> AudioSessionMuter::GetActiveSessions() {
                             WCHAR processPath[MAX_PATH];
                             DWORD size = MAX_PATH;
                             if (QueryFullProcessImageNameW(hProcess, 0, processPath, &size)) {
-                                std::wstring fullPath(processPath);
-                                size_t lastSlash = fullPath.find_last_of(L"\\/");
-                                procName = (lastSlash != std::wstring::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
+                                procName = Utils::ExtractFileName(processPath);
                             }
                             CloseHandle(hProcess);
                         }
@@ -377,7 +391,7 @@ std::vector<ActiveSessionInfo> AudioSessionMuter::GetActiveSessions() {
 
                     BOOL isMuted = FALSE;
                     ComPtr<ISimpleAudioVolume> pVolume;
-                    if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pVolume)))) {
+                    if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pVolume))) && pVolume) {
                         pVolume->GetMute(&isMuted);
                     }
 
@@ -386,12 +400,8 @@ std::vector<ActiveSessionInfo> AudioSessionMuter::GetActiveSessions() {
                     info.processName = procName;
                     info.isMuted = (isMuted != FALSE);
 
-                    std::wstring lowerFound = procName;
-                    std::transform(lowerFound.begin(), lowerFound.end(), lowerFound.begin(), ::towlower);
                     for (const auto& target : m_targetProcesses) {
-                        std::wstring lowerTarget = target;
-                        std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(), ::towlower);
-                        if (lowerFound.find(lowerTarget) != std::wstring::npos) {
+                        if (Utils::ProcessNamesMatch(procName, target)) {
                             info.isTarget = true;
                             break;
                         }
@@ -406,6 +416,7 @@ std::vector<ActiveSessionInfo> AudioSessionMuter::GetActiveSessions() {
 }
 
 void AudioSessionMuter::ScanAndMuteExistingSessions() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_isEnabled || !m_pSessionManager) return;
 
     ComPtr<IAudioSessionEnumerator> pSessionEnum;
@@ -414,7 +425,7 @@ void AudioSessionMuter::ScanAndMuteExistingSessions() {
         pSessionEnum->GetCount(&sessionCount);
         for (int i = 0; i < sessionCount; ++i) {
             ComPtr<IAudioSessionControl> pSessionControl;
-            if (SUCCEEDED(pSessionEnum->GetSession(i, &pSessionControl))) {
+            if (SUCCEEDED(pSessionEnum->GetSession(i, &pSessionControl)) && pSessionControl) {
                 ProcessSession(pSessionControl.Get());
             }
         }
@@ -422,30 +433,43 @@ void AudioSessionMuter::ScanAndMuteExistingSessions() {
 }
 
 void AudioSessionMuter::ProcessSession(IAudioSessionControl* pSessionControl) {
-    if (!pSessionControl || !m_isEnabled) return;
+    if (!pSessionControl) return;
 
-    ComPtr<IAudioSessionControl2> pSessionControl2;
-    if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pSessionControl2)))) {
-        DWORD pid = 0;
-        pSessionControl2->GetProcessId(&pid);
+    std::function<void(const std::wstring&, DWORD)> callbackToInvoke;
+    std::wstring matchedName;
+    DWORD matchedPid = 0;
 
-        std::wstring actualProcName;
-        if (IsMatchingProcess(pid, actualProcName)) {
-            ComPtr<ISimpleAudioVolume> pVolume;
-            if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pVolume)))) {
-                BOOL isMuted = FALSE;
-                pVolume->GetMute(&isMuted);
-                if (!isMuted) {
-                    pVolume->SetMute(TRUE, NULL);
-                    std::string msg = "MUTED: " + WStringToUtf8(actualProcName) + " (PID: " + std::to_string(pid) + ")";
-                    AddLog(msg, true);
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        if (!m_isEnabled) return;
 
-                    if (m_onMutedCallback) {
-                        m_onMutedCallback(actualProcName, pid);
+        ComPtr<IAudioSessionControl2> pSessionControl2;
+        if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pSessionControl2))) && pSessionControl2) {
+            DWORD pid = 0;
+            pSessionControl2->GetProcessId(&pid);
+
+            std::wstring actualProcName;
+            if (IsMatchingProcess(pid, actualProcName)) {
+                ComPtr<ISimpleAudioVolume> pVolume;
+                if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pVolume))) && pVolume) {
+                    BOOL isMuted = FALSE;
+                    pVolume->GetMute(&isMuted);
+                    if (!isMuted) {
+                        pVolume->SetMute(TRUE, NULL);
+                        std::string msg = "MUTED: " + Utils::WStringToUtf8(actualProcName) + " (PID: " + std::to_string(pid) + ")";
+                        AddLog(msg, true);
+
+                        matchedName = actualProcName;
+                        matchedPid = pid;
+                        callbackToInvoke = m_onMutedCallback;
                     }
                 }
             }
         }
+    }
+
+    if (callbackToInvoke && matchedPid != 0) {
+        callbackToInvoke(matchedName, matchedPid);
     }
 }
 
@@ -460,19 +484,11 @@ bool AudioSessionMuter::IsMatchingProcess(DWORD pid, std::wstring& outProcName) 
     bool match = false;
 
     if (QueryFullProcessImageNameW(hProcess, 0, processPath, &size)) {
-        std::wstring fullPath(processPath);
-        size_t lastSlash = fullPath.find_last_of(L"\\/");
-        outProcName = (lastSlash != std::wstring::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
-
-        std::wstring lowerFound = outProcName;
-        std::transform(lowerFound.begin(), lowerFound.end(), lowerFound.begin(), ::towlower);
+        outProcName = Utils::ExtractFileName(processPath);
 
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         for (const auto& item : m_targetProcesses) {
-            std::wstring lowerTarget = item;
-            std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(), ::towlower);
-
-            if (lowerFound.find(lowerTarget) != std::wstring::npos) {
+            if (Utils::ProcessNamesMatch(outProcName, item)) {
                 match = true;
                 break;
             }
@@ -499,7 +515,7 @@ void AudioSessionMuter::AddLog(const std::string& message, bool isAction) {
     entry.message = message;
     entry.isAction = isAction;
 
-    m_logs.push_back(entry);
+    m_logs.push_back(std::move(entry));
     if (m_logs.size() > 200) {
         m_logs.erase(m_logs.begin());
     }

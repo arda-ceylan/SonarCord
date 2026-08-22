@@ -5,15 +5,21 @@
 #pragma once
 
 #include <windows.h>
+#include <shlobj.h>
 #include <string>
 #include <vector>
 #include <sstream>
 #include <algorithm>
 
+#include "Utils.h"
+
+#pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "Advapi32.lib")
+
 struct AppConfig {
     bool isEnabled = false; // Master Guard Switch (disabled by default)
     std::wstring targetDeviceName = L"Sonar - Microphone";
-    std::wstring targetProcessName = L""; // Empty by default (no hardcoded Discord)
+    std::wstring targetProcessName = L""; // Empty by default (user selectable)
     bool startWithWindows = false;
     bool showNotifications = true;
     bool startMinimized = false;
@@ -24,13 +30,25 @@ struct AppConfig {
         return std::wstring(path);
     }
 
-    static std::wstring GetConfigPath() {
+    static std::wstring GetConfigDirectory() {
+        WCHAR appDataPath[MAX_PATH] = { 0 };
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
+            std::wstring dir = std::wstring(appDataPath) + L"\\SonarCord";
+            CreateDirectoryW(dir.c_str(), NULL);
+            return dir;
+        }
+
+        // Fallback to exe directory
         std::wstring exePath = GetExecutablePath();
         size_t lastSlash = exePath.find_last_of(L"\\/");
         if (lastSlash != std::wstring::npos) {
-            return exePath.substr(0, lastSlash + 1) + L"config.ini";
+            return exePath.substr(0, lastSlash);
         }
-        return L"config.ini";
+        return L".";
+    }
+
+    static std::wstring GetConfigPath() {
+        return GetConfigDirectory() + L"\\config.ini";
     }
 
     void Load() {
@@ -42,8 +60,8 @@ struct AppConfig {
         GetPrivateProfileStringW(L"Settings", L"TargetDevice", L"Sonar - Microphone", devName, 256, configPath.c_str());
         targetDeviceName = devName;
 
-        WCHAR procName[512] = { 0 };
-        GetPrivateProfileStringW(L"Settings", L"TargetProcess", L"", procName, 512, configPath.c_str());
+        WCHAR procName[4096] = { 0 };
+        GetPrivateProfileStringW(L"Settings", L"TargetProcess", L"", procName, 4096, configPath.c_str());
         targetProcessName = procName;
 
         startWithWindows = GetPrivateProfileIntW(L"Settings", L"StartWithWindows", 0, configPath.c_str()) != 0;
@@ -51,15 +69,17 @@ struct AppConfig {
         startMinimized = GetPrivateProfileIntW(L"Settings", L"StartMinimized", 0, configPath.c_str()) != 0;
     }
 
-    void Save() const {
+    bool Save() const {
         std::wstring configPath = GetConfigPath();
 
-        WritePrivateProfileStringW(L"Settings", L"IsEnabled", isEnabled ? L"1" : L"0", configPath.c_str());
-        WritePrivateProfileStringW(L"Settings", L"TargetDevice", targetDeviceName.c_str(), configPath.c_str());
-        WritePrivateProfileStringW(L"Settings", L"TargetProcess", targetProcessName.c_str(), configPath.c_str());
-        WritePrivateProfileStringW(L"Settings", L"StartWithWindows", startWithWindows ? L"1" : L"0", configPath.c_str());
-        WritePrivateProfileStringW(L"Settings", L"ShowNotifications", showNotifications ? L"1" : L"0", configPath.c_str());
-        WritePrivateProfileStringW(L"Settings", L"StartMinimized", startMinimized ? L"1" : L"0", configPath.c_str());
+        BOOL ok = TRUE;
+        ok &= WritePrivateProfileStringW(L"Settings", L"IsEnabled", isEnabled ? L"1" : L"0", configPath.c_str());
+        ok &= WritePrivateProfileStringW(L"Settings", L"TargetDevice", targetDeviceName.c_str(), configPath.c_str());
+        ok &= WritePrivateProfileStringW(L"Settings", L"TargetProcess", targetProcessName.c_str(), configPath.c_str());
+        ok &= WritePrivateProfileStringW(L"Settings", L"StartWithWindows", startWithWindows ? L"1" : L"0", configPath.c_str());
+        ok &= WritePrivateProfileStringW(L"Settings", L"ShowNotifications", showNotifications ? L"1" : L"0", configPath.c_str());
+        ok &= WritePrivateProfileStringW(L"Settings", L"StartMinimized", startMinimized ? L"1" : L"0", configPath.c_str());
+        return ok != FALSE;
     }
 
     static bool IsAutoStartEnabled() {
@@ -75,16 +95,19 @@ struct AppConfig {
         return false;
     }
 
-    static void SetAutoStart(bool enable) {
+    static bool SetAutoStart(bool enable) {
         HKEY hKey;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+            LONG result;
             if (enable) {
                 std::wstring exePath = L"\"" + GetExecutablePath() + L"\" --minimized";
-                RegSetValueExW(hKey, L"SonarCord", 0, REG_SZ, (const BYTE*)exePath.c_str(), (DWORD)((exePath.length() + 1) * sizeof(WCHAR)));
+                result = RegSetValueExW(hKey, L"SonarCord", 0, REG_SZ, (const BYTE*)exePath.c_str(), (DWORD)((exePath.length() + 1) * sizeof(WCHAR)));
             } else {
-                RegDeleteValueW(hKey, L"SonarCord");
+                result = RegDeleteValueW(hKey, L"SonarCord");
             }
             RegCloseKey(hKey);
+            return (result == ERROR_SUCCESS);
         }
+        return false;
     }
 };
