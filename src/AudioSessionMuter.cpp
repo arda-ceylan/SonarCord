@@ -37,12 +37,21 @@ bool AudioSessionMuter::Initialize() {
         return false;
     }
 
+    // Register audio endpoint listener (Detects SteelSeries Sonar / hotplugged devices when Windows boots)
+    m_pEndpointHandler = new AudioEndpointNotificationHandler(this);
+    m_pEnumerator->RegisterEndpointNotificationCallback(m_pEndpointHandler);
+
     AddLog("Audio controller initialized.");
     return true;
 }
 
 void AudioSessionMuter::Shutdown() {
     Detach();
+    if (m_pEnumerator && m_pEndpointHandler) {
+        m_pEnumerator->UnregisterEndpointNotificationCallback(m_pEndpointHandler);
+        m_pEndpointHandler->Release();
+        m_pEndpointHandler = nullptr;
+    }
     m_pEnumerator.Reset();
     CoUninitialize();
 }
@@ -106,6 +115,8 @@ std::vector<AudioDeviceInfo> AudioSessionMuter::EnumerateRenderDevices() {
 bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     Detach();
+
+    m_lastRequestedDevice = targetNameOrSubstring;
 
     if (!m_pEnumerator) return false;
 
@@ -184,6 +195,14 @@ void AudioSessionMuter::Detach() {
     m_isAttached = false;
 }
 
+void AudioSessionMuter::OnAudioEndpointsChanged() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    // If not currently attached, try auto-attaching to our target device!
+    if (!m_isAttached && !m_lastRequestedDevice.empty()) {
+        AttachToDevice(m_lastRequestedDevice);
+    }
+}
+
 void AudioSessionMuter::SetTargetProcess(const std::wstring& procName) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_targetProcesses.clear();
@@ -256,7 +275,6 @@ void AudioSessionMuter::RemoveTargetProcess(const std::wstring& procName) {
     if (it != m_targetProcesses.end()) {
         m_targetProcesses.erase(it, m_targetProcesses.end());
         AddLog("Removed from target list: " + WStringToUtf8(procName));
-        // Automatically restore audio on the session!
         UnmuteProcess(procName);
     }
 }
@@ -294,7 +312,7 @@ void AudioSessionMuter::UnmuteProcess(const std::wstring& procName) {
                                 if (lowerFound.find(lowerProc) != std::wstring::npos) {
                                     ComPtr<ISimpleAudioVolume> pVolume;
                                     if (SUCCEEDED(pSessionControl->QueryInterface(IID_PPV_ARGS(&pVolume)))) {
-                                        pVolume->SetMute(FALSE, NULL); // RESTORE AUDIO
+                                        pVolume->SetMute(FALSE, NULL);
                                         AddLog("UNMUTED: " + WStringToUtf8(actualProcName) + " (PID: " + std::to_string(pid) + ")", true);
                                     }
                                 }
@@ -500,6 +518,27 @@ void AudioSessionMuter::ClearLogs() {
 HRESULT STDMETHODCALLTYPE AudioSessionNotificationHandler::OnSessionCreated(IAudioSessionControl* NewSession) {
     if (m_pParent) {
         m_pParent->ProcessSession(NewSession);
+    }
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE AudioEndpointNotificationHandler::OnDeviceStateChanged(LPCWSTR pwstrDeviceId, DWORD dwNewState) {
+    if (m_pParent) {
+        m_pParent->OnAudioEndpointsChanged();
+    }
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE AudioEndpointNotificationHandler::OnDeviceAdded(LPCWSTR pwstrDeviceId) {
+    if (m_pParent) {
+        m_pParent->OnAudioEndpointsChanged();
+    }
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE AudioEndpointNotificationHandler::OnDeviceRemoved(LPCWSTR pwstrDeviceId) {
+    if (m_pParent) {
+        m_pParent->OnAudioEndpointsChanged();
     }
     return S_OK;
 }

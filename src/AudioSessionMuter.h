@@ -39,6 +39,7 @@ struct LogEntry {
 };
 
 class AudioSessionNotificationHandler;
+class AudioEndpointNotificationHandler;
 
 class AudioSessionMuter {
 public:
@@ -75,6 +76,9 @@ public:
     void UnmuteAllTargets();
     void ProcessSession(IAudioSessionControl* pSessionControl);
 
+    // Dynamic Device Hotplug Handler
+    void OnAudioEndpointsChanged();
+
     // Logging
     void AddLog(const std::string& message, bool isAction = false);
     std::vector<LogEntry> GetLogs();
@@ -92,6 +96,7 @@ private:
     bool m_isEnabled = false;
     std::vector<std::wstring> m_targetProcesses;
     std::wstring m_activeDeviceName = L"";
+    std::wstring m_lastRequestedDevice = L"Sonar - Microphone";
     bool m_isAttached = false;
 
     ComPtr<IMMDeviceEnumerator> m_pEnumerator;
@@ -99,6 +104,7 @@ private:
     ComPtr<IAudioSessionManager2> m_pSessionManager;
     
     AudioSessionNotificationHandler* m_pNotificationHandler = nullptr;
+    AudioEndpointNotificationHandler* m_pEndpointHandler = nullptr;
 
     mutable std::recursive_mutex m_mutex;
     std::vector<LogEntry> m_logs;
@@ -128,4 +134,33 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE OnSessionCreated(IAudioSessionControl* NewSession) override;
+};
+
+class AudioEndpointNotificationHandler : public IMMNotificationClient {
+    LONG m_refCount = 1;
+    AudioSessionMuter* m_pParent = nullptr;
+public:
+    AudioEndpointNotificationHandler(AudioSessionMuter* parent) : m_pParent(parent) {}
+
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&m_refCount); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG ulRef = InterlockedDecrement(&m_refCount);
+        if (ulRef == 0) delete this;
+        return ulRef;
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IMMNotificationClient)) {
+            *ppv = static_cast<IMMNotificationClient*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR pwstrDeviceId, DWORD dwNewState) override;
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR pwstrDeviceId) override;
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR pwstrDeviceId) override;
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR pwstrDefaultDeviceId) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR pwstrDeviceId, const PROPERTYKEY key) override { return S_OK; }
 };
