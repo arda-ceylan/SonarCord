@@ -1,0 +1,22 @@
+# Visual Studio build outputs & caches
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+*.ipch
+
+# Build logs & outputs
+build_output.txt
+*.log
+*.tlog
+*.lastbuildstate
+*.idb
+*.pdb
+*.obj
+*.res
+*.pch
