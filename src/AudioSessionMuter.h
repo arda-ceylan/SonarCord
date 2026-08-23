@@ -52,7 +52,7 @@ public:
     AudioSessionMuter& operator=(const AudioSessionMuter&) = delete;
 
     bool Initialize();
-    void Shutdown();
+    void Shutdown(bool unmuteOnExit = true);
 
     // Master Toggle Control
     void SetEnabled(bool enable);
@@ -60,7 +60,7 @@ public:
 
     // Audio Devices Management
     std::vector<AudioDeviceInfo> EnumerateRenderDevices();
-    bool AttachToDevice(const std::wstring& targetNameOrSubstring);
+    bool AttachToDevice(const std::wstring& targetNameOrSubstring, bool force = false);
     void Detach();
 
     // Target Filtering

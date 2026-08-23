@@ -20,6 +20,7 @@ public:
     void Render();
     void RefreshDevices();
     void ApplyModernDarkTheme();
+    void SyncUIFromConfig();
 
     bool ShouldMinimizeToTray() const { return m_requestMinimizeToTray; }
     void ResetMinimizeRequest() { m_requestMinimizeToTray = false; }
@@ -36,6 +37,7 @@ private:
     bool m_startWithWindows = false;
     bool m_showNotifications = true;
     bool m_startMinimized = false;
+    bool m_unmuteOnExit = true;
     bool m_requestMinimizeToTray = false;
 
     // Cached sessions state
@@ -45,7 +47,6 @@ private:
     // Toggle animation states
     std::unordered_map<std::string, float> m_toggleAnimMap;
 
-    void SyncUIFromConfig();
     void SaveConfigFromUI();
     bool DrawToggleSwitch(const char* id, bool* v);
 

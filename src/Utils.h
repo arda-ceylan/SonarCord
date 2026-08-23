@@ -56,9 +56,6 @@ inline std::string Trim(const std::string& s) {
     return s.substr(start, end - start + 1);
 }
 
-inline void TrimWorkingSet(HANDLE hProcess = GetCurrentProcess()) {
-    SetProcessWorkingSetSize(hProcess, (SIZE_T)-1, (SIZE_T)-1);
-}
 
 inline std::wstring ExtractFileName(const std::wstring& fullPath) {
     size_t lastSlash = fullPath.find_last_of(L"\\/");

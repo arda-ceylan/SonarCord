@@ -32,7 +32,7 @@ As soon as Discord (or any user-defined application) spawns an audio playback se
 
 ## ✨ Key Features
 
-* 🚀 **Zero CPU & Ultra-Low Memory:** Consumes **0.0% CPU** and **~0.4 MB RAM** when running in the background.
+* 🚀 **Zero CPU & Ultra-Low Memory:** Consumes **0.0% CPU** and **~15 MB RAM** when running in the background.
 * ⚡ **Event-Driven WASAPI Architecture:** No polling loops or CPU spinlocks; wakes up only when an audio session is created or modified.
 * 🔊 **Seamless Auto-Unmute:** Automatically restores audio volume when an application is untoggled or when the master muter is paused.
 * 🎨 **Fluent Modern Dark UI:** Hardware-accelerated DirectX 11 + Dear ImGui interface.

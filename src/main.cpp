@@ -32,7 +32,8 @@
 
 #define ID_TRAY_SHOW 1001
 #define ID_TRAY_AUTOSTART 1002
-#define ID_TRAY_EXIT 1003
+#define ID_TRAY_UNMUTE_ON_EXIT 1003
+#define ID_TRAY_EXIT 1004
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -107,6 +108,10 @@ void ShowTrayMenu(HWND hWnd) {
     
     bool autoStart = AppConfig::IsAutoStartEnabled();
     AppendMenuW(hMenu, MF_STRING | (autoStart ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_AUTOSTART, L"Start with Windows");
+
+    bool unmuteOnExit = g_pGlobalConfig ? g_pGlobalConfig->unmuteOnExit : true;
+    AppendMenuW(hMenu, MF_STRING | (unmuteOnExit ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_UNMUTE_ON_EXIT, L"Unmute on Exit");
+
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
 
@@ -118,8 +123,10 @@ void ShowTrayMenu(HWND hWnd) {
         if (g_isWindowVisible) {
             ShowWindow(hWnd, SW_HIDE);
             g_isWindowVisible = false;
-            Utils::TrimWorkingSet();
         } else {
+            if (g_pGlobalAppUI) {
+                g_pGlobalAppUI->SyncUIFromConfig();
+            }
             ShowWindow(hWnd, SW_SHOW);
             SetForegroundWindow(hWnd);
             g_isWindowVisible = true;
@@ -130,6 +137,17 @@ void ShowTrayMenu(HWND hWnd) {
         if (g_pGlobalConfig) {
             g_pGlobalConfig->startWithWindows = newStatus;
             g_pGlobalConfig->Save();
+        }
+        if (g_pGlobalAppUI) {
+            g_pGlobalAppUI->SyncUIFromConfig();
+        }
+    } else if (cmd == ID_TRAY_UNMUTE_ON_EXIT) {
+        if (g_pGlobalConfig) {
+            g_pGlobalConfig->unmuteOnExit = !g_pGlobalConfig->unmuteOnExit;
+            g_pGlobalConfig->Save();
+        }
+        if (g_pGlobalAppUI) {
+            g_pGlobalAppUI->SyncUIFromConfig();
         }
     } else if (cmd == ID_TRAY_EXIT) {
         PostQuitMessage(0);
@@ -161,8 +179,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
         return 1;
     }
-
-    muter.SetEnabled(config.isEnabled);
     muter.SetTargetProcess(config.targetProcessName);
 
     // Notification Callback: Post to UI thread to guarantee COM/Tray thread-safety
@@ -275,7 +291,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     if (startMinimized) {
         ShowWindow(g_hWnd, SW_HIDE);
         g_isWindowVisible = false;
-        Utils::TrimWorkingSet();
     } else {
         ShowWindow(g_hWnd, SW_SHOWDEFAULT);
         UpdateWindow(g_hWnd);
@@ -296,7 +311,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
             // If window was hidden during message processing
             if (!g_isWindowVisible) {
-                Utils::TrimWorkingSet();
                 continue;
             }
 
@@ -304,7 +318,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                 appUI.ResetMinimizeRequest();
                 ShowWindow(g_hWnd, SW_HIDE);
                 g_isWindowVisible = false;
-                Utils::TrimWorkingSet();
                 continue;
             }
 
@@ -349,7 +362,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     DestroyWindow(g_hWnd);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
 
-    muter.Shutdown();
+    muter.Shutdown(config.unmuteOnExit);
 
     if (hSingleInstanceMutex) {
         CloseHandle(hSingleInstanceMutex);
@@ -446,7 +459,6 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (wParam == SIZE_MINIMIZED) {
             ShowWindow(hWnd, SW_HIDE);
             g_isWindowVisible = false;
-            Utils::TrimWorkingSet();
         }
         return 0;
 
@@ -454,7 +466,6 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if ((wParam & 0xfff0) == SC_MINIMIZE) {
             ShowWindow(hWnd, SW_HIDE);
             g_isWindowVisible = false;
-            Utils::TrimWorkingSet();
             return 0;
         }
         break;
@@ -462,7 +473,6 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CLOSE:
         ShowWindow(hWnd, SW_HIDE);
         g_isWindowVisible = false;
-        Utils::TrimWorkingSet();
         return 0;
 
     case WM_TRAYICON:
@@ -470,8 +480,10 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (g_isWindowVisible) {
                 ShowWindow(hWnd, SW_HIDE);
                 g_isWindowVisible = false;
-                Utils::TrimWorkingSet();
             } else {
+                if (g_pGlobalAppUI) {
+                    g_pGlobalAppUI->SyncUIFromConfig();
+                }
                 ShowWindow(hWnd, SW_SHOW);
                 SetForegroundWindow(hWnd);
                 g_isWindowVisible = true;

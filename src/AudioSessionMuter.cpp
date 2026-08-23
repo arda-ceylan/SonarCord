@@ -48,9 +48,12 @@ bool AudioSessionMuter::Initialize() {
     return true;
 }
 
-void AudioSessionMuter::Shutdown() {
+void AudioSessionMuter::Shutdown(bool unmuteOnExit) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
+    if (unmuteOnExit) {
+        UnmuteAllTargets();
+    }
     Detach();
 
     if (m_pEnumerator && m_pEndpointHandler) {
@@ -69,6 +72,7 @@ void AudioSessionMuter::Shutdown() {
 
 void AudioSessionMuter::SetEnabled(bool enable) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (m_isEnabled == enable) return;
     m_isEnabled = enable;
     if (m_isEnabled) {
         AddLog("Muter enabled - Watching audio sessions.");
@@ -124,8 +128,19 @@ std::vector<AudioDeviceInfo> AudioSessionMuter::EnumerateRenderDevices() {
     return devices;
 }
 
-bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring) {
+bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring, bool force) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    std::wstring lowerTarget = Utils::ToLower(targetNameOrSubstring);
+    std::wstring lowerCurrent = Utils::ToLower(m_activeDeviceName);
+
+    // If already attached to requested device and manager is alive, avoid duplicate detachment & log spam
+    if (!force && m_isAttached && m_pSessionManager && !m_activeDeviceName.empty()) {
+        if (lowerCurrent.find(lowerTarget) != std::wstring::npos) {
+            return true;
+        }
+    }
+
     Detach();
 
     m_lastRequestedDevice = targetNameOrSubstring;
@@ -139,8 +154,6 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
 
     UINT count = 0;
     pCollection->GetCount(&count);
-
-    std::wstring lowerTarget = Utils::ToLower(targetNameOrSubstring);
 
     for (UINT i = 0; i < count; ++i) {
         ComPtr<IMMDevice> pDevice;
@@ -210,15 +223,15 @@ void AudioSessionMuter::OnAudioEndpointsChanged() {
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         devCallback = m_onDeviceChangedCallback;
-
-        // If not currently attached, try auto-attaching to requested target device
-        if (!m_isAttached && !m_lastRequestedDevice.empty()) {
-            AttachToDevice(m_lastRequestedDevice);
-        }
     }
 
     if (devCallback) {
         devCallback();
+    } else {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        if (!m_isAttached && !m_lastRequestedDevice.empty()) {
+            AttachToDevice(m_lastRequestedDevice);
+        }
     }
 }
 

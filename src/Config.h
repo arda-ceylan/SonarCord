@@ -23,6 +23,7 @@ struct AppConfig {
     bool startWithWindows = false;
     bool showNotifications = true;
     bool startMinimized = false;
+    bool unmuteOnExit = true;
 
     static std::wstring GetExecutablePath() {
         WCHAR path[MAX_PATH] = { 0 };
@@ -67,6 +68,7 @@ struct AppConfig {
         startWithWindows = GetPrivateProfileIntW(L"Settings", L"StartWithWindows", 0, configPath.c_str()) != 0;
         showNotifications = GetPrivateProfileIntW(L"Settings", L"ShowNotifications", 1, configPath.c_str()) != 0;
         startMinimized = GetPrivateProfileIntW(L"Settings", L"StartMinimized", 0, configPath.c_str()) != 0;
+        unmuteOnExit = GetPrivateProfileIntW(L"Settings", L"UnmuteOnExit", 1, configPath.c_str()) != 0;
     }
 
     bool Save() const {
@@ -79,6 +81,7 @@ struct AppConfig {
         ok &= WritePrivateProfileStringW(L"Settings", L"StartWithWindows", startWithWindows ? L"1" : L"0", configPath.c_str());
         ok &= WritePrivateProfileStringW(L"Settings", L"ShowNotifications", showNotifications ? L"1" : L"0", configPath.c_str());
         ok &= WritePrivateProfileStringW(L"Settings", L"StartMinimized", startMinimized ? L"1" : L"0", configPath.c_str());
+        ok &= WritePrivateProfileStringW(L"Settings", L"UnmuteOnExit", unmuteOnExit ? L"1" : L"0", configPath.c_str());
         return ok != FALSE;
     }
 

@@ -29,6 +29,7 @@ void AppUI::SyncUIFromConfig() {
     m_startWithWindows = AppConfig::IsAutoStartEnabled();
     m_showNotifications = m_pConfig->showNotifications;
     m_startMinimized = m_pConfig->startMinimized;
+    m_unmuteOnExit = m_pConfig->unmuteOnExit;
 }
 
 void AppUI::SaveConfigFromUI() {
@@ -43,6 +44,7 @@ void AppUI::SaveConfigFromUI() {
     m_pConfig->startWithWindows = m_startWithWindows;
     m_pConfig->showNotifications = m_showNotifications;
     m_pConfig->startMinimized = m_startMinimized;
+    m_pConfig->unmuteOnExit = m_unmuteOnExit;
 
     m_pConfig->Save();
     AppConfig::SetAutoStart(m_startWithWindows);
@@ -175,7 +177,7 @@ void AppUI::ApplyModernDarkTheme() {
 }
 
 void AppUI::RenderHeaderCard() {
-    ImGui::BeginChild("HeaderCard", ImVec2(0, 64), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("HeaderCard", ImVec2(0, 64), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     
     bool isAttached = m_pMuter && m_pMuter->IsAttached();
 
@@ -183,7 +185,7 @@ void AppUI::RenderHeaderCard() {
     ImGui::SetCursorPos(ImVec2(12, 10));
     ImGui::TextColored(ImVec4(0.45f, 0.65f, 0.98f, 1.0f), "SonarCord");
     ImGui::SameLine();
-    ImGui::TextDisabled("v1.1");
+    ImGui::TextDisabled("v1.2");
 
     // Status Line
     ImGui::SetCursorPos(ImVec2(12, 34));
@@ -211,7 +213,7 @@ void AppUI::RenderHeaderCard() {
 }
 
 void AppUI::RenderDeviceCard() {
-    ImGui::BeginChild("DeviceCard", ImVec2(0, 68), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("DeviceCard", ImVec2(0, 68), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     
     ImGui::SetCursorPos(ImVec2(12, 8));
     ImGui::TextDisabled("Audio Output Device");
@@ -248,7 +250,7 @@ void AppUI::RenderDeviceCard() {
 }
 
 void AppUI::RenderAppsCard() {
-    ImGui::BeginChild("AppsCard", ImVec2(0, 150), true);
+    ImGui::BeginChild("AppsCard", ImVec2(0, 150), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     
     ImGui::SetCursorPos(ImVec2(12, 8));
     ImGui::TextDisabled("Applications (Click to toggle mute)");
@@ -391,35 +393,44 @@ void AppUI::RenderAppsCard() {
 }
 
 void AppUI::RenderSettingsCard() {
-    ImGui::BeginChild("SettingsCard", ImVec2(0, 44), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("SettingsCard", ImVec2(0, 74), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     
     float availWidth = ImGui::GetContentRegionAvail().x;
     float colWidth = (availWidth - 10.0f) * 0.5f;
 
-    // Option 1: Start with Windows
-    ImGui::SetCursorPos(ImVec2(12, 12));
+    // Row 1 - Option 1: Start with Windows
+    ImGui::SetCursorPos(ImVec2(12, 10));
     if (DrawToggleSwitch("##StartWithWindowsSwitch", &m_startWithWindows)) {
         SaveConfigFromUI();
     }
     ImGui::SameLine();
-    ImGui::SetCursorPosY(12);
+    ImGui::SetCursorPosY(10);
     ImGui::Text("Start with Windows");
 
-    // Option 2: Show Notifications
+    // Row 1 - Option 2: Show Notifications
     ImGui::SameLine(colWidth + 16.0f);
-    ImGui::SetCursorPosY(12);
+    ImGui::SetCursorPosY(10);
     if (DrawToggleSwitch("##ShowNotificationsSwitch", &m_showNotifications)) {
         SaveConfigFromUI();
     }
     ImGui::SameLine();
-    ImGui::SetCursorPosY(12);
+    ImGui::SetCursorPosY(10);
     ImGui::Text("Notifications");
+
+    // Row 2 - Option 3: Unmute on Exit
+    ImGui::SetCursorPos(ImVec2(12, 42));
+    if (DrawToggleSwitch("##UnmuteOnExitSwitch", &m_unmuteOnExit)) {
+        SaveConfigFromUI();
+    }
+    ImGui::SameLine();
+    ImGui::SetCursorPosY(42);
+    ImGui::Text("Unmute on Exit");
 
     ImGui::EndChild();
 }
 
 void AppUI::RenderActivityCard() {
-    ImGui::BeginChild("ActivityCard", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("ActivityCard", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     
     // Header Row: Title & Right-Aligned Clear Button
     ImGui::SetCursorPos(ImVec2(12, 10));
