@@ -6,6 +6,7 @@
 #include <d3d11.h>
 #include <shellapi.h>
 #include <dwmapi.h>
+#include <wrl/client.h>
 #include <string>
 #include <memory>
 
@@ -26,6 +27,8 @@
 #pragma comment(lib, "Gdi32.lib")
 #pragma comment(lib, "Dwmapi.lib")
 
+using Microsoft::WRL::ComPtr;
+
 #define WM_TRAYICON (WM_USER + 100)
 #define WM_APP_MUTE_NOTIFY (WM_APP + 1)
 #define WM_APP_DEVICE_CHANGED (WM_APP + 2)
@@ -34,6 +37,8 @@
 #define ID_TRAY_AUTOSTART 1002
 #define ID_TRAY_UNMUTE_ON_EXIT 1003
 #define ID_TRAY_EXIT 1004
+
+#define IDT_DEVICE_REFRESH 2001
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -48,19 +53,19 @@ struct MuteNotificationPayload {
     DWORD pid = 0;
 };
 
-// Global DirectX 11 objects
-static ID3D11Device*            g_pd3dDevice = nullptr;
-static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
-static IDXGISwapChain*          g_pSwapChain = nullptr;
-static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
+// Global DirectX 11 ComPtr objects
+static ComPtr<ID3D11Device>            g_pd3dDevice;
+static ComPtr<ID3D11DeviceContext>     g_pd3dDeviceContext;
+static ComPtr<IDXGISwapChain>          g_pSwapChain;
+static ComPtr<ID3D11RenderTargetView>  g_mainRenderTargetView;
 
-static HWND                     g_hWnd = nullptr;
-static NOTIFYICONDATAW          g_nid = { 0 };
-static bool                     g_isWindowVisible = true;
+static HWND                            g_hWnd = nullptr;
+static NOTIFYICONDATAW                 g_nid = { 0 };
+static bool                            g_isWindowVisible = true;
 
 // AppUI reference for thread messages
-static AppUI*                   g_pGlobalAppUI = nullptr;
-static AppConfig*               g_pGlobalConfig = nullptr;
+static AppUI*                          g_pGlobalAppUI = nullptr;
+static AppConfig*                      g_pGlobalConfig = nullptr;
 
 // Function prototypes
 bool CreateDeviceD3D(HWND hWnd);
@@ -155,6 +160,9 @@ void ShowTrayMenu(HWND hWnd) {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nShowCmd) {
+    // Enable Per-Monitor V2 DPI Awareness for crisp UI on high-DPI displays
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     // 0. Single Instance Check via Named Mutex
     HANDLE hSingleInstanceMutex = CreateMutexW(NULL, TRUE, L"Local\\SonarCord_SingleInstance_Mutex");
     if (hSingleInstanceMutex != NULL && GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -206,7 +214,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         MessageBoxW(NULL, L"Failed to register window class!", L"SonarCord Error", MB_ICONERROR);
-        muter.Shutdown();
+        muter.Shutdown(config.unmuteOnExit);
         if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
         return 1;
     }
@@ -226,7 +234,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     if (!g_hWnd) {
         MessageBoxW(NULL, L"Failed to create window!", L"SonarCord Error", MB_ICONERROR);
         UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        muter.Shutdown();
+        muter.Shutdown(config.unmuteOnExit);
         if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
         return 1;
     }
@@ -241,7 +249,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         CleanupDeviceD3D();
         DestroyWindow(g_hWnd);
         UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        muter.Shutdown();
+        muter.Shutdown(config.unmuteOnExit);
         if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
         return 1;
     }
@@ -274,7 +282,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     }
 
     ImGui_ImplWin32_Init(g_hWnd);
-    ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+    ImGui_ImplDX11_Init(g_pd3dDevice.Get(), g_pd3dDeviceContext.Get());
 
     // 5. Initialize UI Controller
     AppUI appUI(&muter, &config);
@@ -330,8 +338,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
             ImGui::Render();
             const float clear_color_with_alpha[4] = { 0.08f, 0.09f, 0.11f, 1.0f };
-            g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, NULL);
-            g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color_with_alpha);
+            ID3D11RenderTargetView* rtv = g_mainRenderTargetView.Get();
+            g_pd3dDeviceContext->OMSetRenderTargets(1, &rtv, NULL);
+            g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView.Get(), clear_color_with_alpha);
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
             g_pSwapChain->Present(1, 0); // V-Sync
@@ -406,24 +415,23 @@ bool CreateDeviceD3D(HWND hWnd) {
 
 void CleanupDeviceD3D() {
     CleanupRenderTarget();
-    if (g_pSwapChain) { g_pSwapChain->Release(); g_pSwapChain = nullptr; }
-    if (g_pd3dDeviceContext) { g_pd3dDeviceContext->Release(); g_pd3dDeviceContext = nullptr; }
-    if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
+    g_pSwapChain.Reset();
+    g_pd3dDeviceContext.Reset();
+    g_pd3dDevice.Reset();
 }
 
 void CreateRenderTarget() {
-    ID3D11Texture2D* pBackBuffer = nullptr;
+    ComPtr<ID3D11Texture2D> pBackBuffer;
     if (g_pSwapChain) {
         HRESULT hr = g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
         if (SUCCEEDED(hr) && pBackBuffer) {
-            g_pd3dDevice->CreateRenderTargetView(pBackBuffer, NULL, &g_mainRenderTargetView);
-            pBackBuffer->Release();
+            g_pd3dDevice->CreateRenderTargetView(pBackBuffer.Get(), NULL, g_mainRenderTargetView.ReleaseAndGetAddressOf());
         }
     }
 }
 
 void CleanupRenderTarget() {
-    if (g_mainRenderTargetView) { g_mainRenderTargetView->Release(); g_mainRenderTargetView = nullptr; }
+    g_mainRenderTargetView.Reset();
 }
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -444,14 +452,23 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_APP_DEVICE_CHANGED: {
-        if (g_pGlobalAppUI) {
-            g_pGlobalAppUI->RefreshDevices();
+        // Debounce rapid-fire hotplug events (coalesce multiple events into 1 refresh after 250ms)
+        SetTimer(hWnd, IDT_DEVICE_REFRESH, 250, NULL);
+        return 0;
+    }
+
+    case WM_TIMER: {
+        if (wParam == IDT_DEVICE_REFRESH) {
+            KillTimer(hWnd, IDT_DEVICE_REFRESH);
+            if (g_pGlobalAppUI) {
+                g_pGlobalAppUI->RefreshDevices();
+            }
         }
         return 0;
     }
 
     case WM_SIZE:
-        if (g_pd3dDevice != NULL && wParam != SIZE_MINIMIZED) {
+        if (g_pd3dDevice && wParam != SIZE_MINIMIZED) {
             CleanupRenderTarget();
             g_pSwapChain->ResizeBuffers(0, (UINT)LOWORD(lParam), (UINT)HIWORD(lParam), DXGI_FORMAT_UNKNOWN, 0);
             CreateRenderTarget();

@@ -46,7 +46,10 @@ void AppUI::SaveConfigFromUI() {
     m_pConfig->startMinimized = m_startMinimized;
     m_pConfig->unmuteOnExit = m_unmuteOnExit;
 
-    m_pConfig->Save();
+    if (!m_pConfig->Save()) {
+        m_pMuter->AddLog("ERROR: Failed to save config to disk!");
+    }
+
     AppConfig::SetAutoStart(m_startWithWindows);
     m_pMuter->SetEnabled(m_isGuardEnabled);
 }
@@ -60,13 +63,28 @@ void AppUI::RefreshDevices() {
     std::wstring targetToFind = m_pConfig ? m_pConfig->targetDeviceName : L"Sonar - Microphone";
     std::wstring lowerTarget = Utils::ToLower(targetToFind);
 
+    // Pass 1: Exact case-insensitive match
     for (int i = 0; i < (int)m_devices.size(); ++i) {
         std::wstring lowerDev = Utils::ToLower(m_devices[i].friendlyName);
-
-        if (lowerDev.find(lowerTarget) != std::wstring::npos) {
+        if (lowerDev == lowerTarget) {
             m_selectedDeviceIndex = i;
             break;
         }
+    }
+
+    // Pass 2: Fallback to substring match
+    if (m_selectedDeviceIndex == -1) {
+        for (int i = 0; i < (int)m_devices.size(); ++i) {
+            std::wstring lowerDev = Utils::ToLower(m_devices[i].friendlyName);
+            if (lowerDev.find(lowerTarget) != std::wstring::npos) {
+                m_selectedDeviceIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (m_selectedDeviceIndex == -1 && !m_devices.empty()) {
+        m_selectedDeviceIndex = 0;
     }
 
     if (m_selectedDeviceIndex != -1 && m_selectedDeviceIndex < (int)m_devices.size()) {
@@ -448,7 +466,13 @@ void AppUI::RenderActivityCard() {
     
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 3.0f));
     if (m_pMuter) {
-        auto logs = m_pMuter->GetLogs();
+        uint64_t currentRev = m_pMuter->GetLogRevision();
+        if (currentRev != m_cachedLogRevision || m_cachedLogs.empty()) {
+            m_cachedLogs = m_pMuter->GetLogs();
+            m_cachedLogRevision = currentRev;
+        }
+
+        const auto& logs = m_cachedLogs;
         if (logs.empty()) {
             ImGui::SetCursorPosY(40);
             ImGui::TextDisabled("   No audio events yet.");

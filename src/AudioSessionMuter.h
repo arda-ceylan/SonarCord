@@ -12,6 +12,7 @@
 #include <wrl/client.h>
 #include <string>
 #include <vector>
+#include <deque>
 #include <mutex>
 #include <functional>
 
@@ -87,6 +88,7 @@ public:
     // Logging
     void AddLog(const std::string& message, bool isAction = false);
     std::vector<LogEntry> GetLogs();
+    uint64_t GetLogRevision() const;
     void ClearLogs();
 
     // Callback listeners
@@ -119,7 +121,8 @@ private:
     AudioEndpointNotificationHandler* m_pEndpointHandler = nullptr;
 
     mutable std::recursive_mutex m_mutex;
-    std::vector<LogEntry> m_logs;
+    std::deque<LogEntry> m_logs;
+    uint64_t m_logRevision = 0;
     std::function<void(const std::wstring&, DWORD)> m_onMutedCallback;
     std::function<void()> m_onDeviceChangedCallback;
 };

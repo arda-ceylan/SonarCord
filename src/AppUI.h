@@ -40,9 +40,11 @@ private:
     bool m_unmuteOnExit = true;
     bool m_requestMinimizeToTray = false;
 
-    // Cached sessions state
+    // Cached state
     std::vector<ActiveSessionInfo> m_cachedSessions;
     float m_sessionUpdateTimer = 0.0f;
+    std::vector<LogEntry> m_cachedLogs;
+    uint64_t m_cachedLogRevision = 0;
 
     // Toggle animation states
     std::unordered_map<std::string, float> m_toggleAnimMap;

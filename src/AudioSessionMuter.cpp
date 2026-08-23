@@ -136,7 +136,7 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
 
     // If already attached to requested device and manager is alive, avoid duplicate detachment & log spam
     if (!force && m_isAttached && m_pSessionManager && !m_activeDeviceName.empty()) {
-        if (lowerCurrent.find(lowerTarget) != std::wstring::npos) {
+        if (lowerCurrent == lowerTarget || lowerCurrent.find(lowerTarget) != std::wstring::npos) {
             return true;
         }
     }
@@ -155,6 +155,10 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
     UINT count = 0;
     pCollection->GetCount(&count);
 
+    ComPtr<IMMDevice> pMatchedDevice;
+    std::wstring matchedName;
+
+    // Pass 1: Look for exact case-insensitive match
     for (UINT i = 0; i < count; ++i) {
         ComPtr<IMMDevice> pDevice;
         if (SUCCEEDED(pCollection->Item(i, &pDevice))) {
@@ -164,11 +168,9 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
                 PropVariantInit(&varName);
                 if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &varName)) && varName.pwszVal) {
                     std::wstring name = varName.pwszVal;
-                    std::wstring lowerName = Utils::ToLower(name);
-
-                    if (lowerName.find(lowerTarget) != std::wstring::npos) {
-                        m_pCurrentDevice = pDevice;
-                        m_activeDeviceName = name;
+                    if (Utils::ToLower(name) == lowerTarget) {
+                        pMatchedDevice = pDevice;
+                        matchedName = name;
                         PropVariantClear(&varName);
                         break;
                     }
@@ -177,6 +179,33 @@ bool AudioSessionMuter::AttachToDevice(const std::wstring& targetNameOrSubstring
             }
         }
     }
+
+    // Pass 2: Fallback to substring match
+    if (!pMatchedDevice) {
+        for (UINT i = 0; i < count; ++i) {
+            ComPtr<IMMDevice> pDevice;
+            if (SUCCEEDED(pCollection->Item(i, &pDevice))) {
+                ComPtr<IPropertyStore> pProps;
+                if (SUCCEEDED(pDevice->OpenPropertyStore(STGM_READ, &pProps))) {
+                    PROPVARIANT varName;
+                    PropVariantInit(&varName);
+                    if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &varName)) && varName.pwszVal) {
+                        std::wstring name = varName.pwszVal;
+                        if (Utils::ToLower(name).find(lowerTarget) != std::wstring::npos) {
+                            pMatchedDevice = pDevice;
+                            matchedName = name;
+                            PropVariantClear(&varName);
+                            break;
+                        }
+                    }
+                    PropVariantClear(&varName);
+                }
+            }
+        }
+    }
+
+    m_pCurrentDevice = pMatchedDevice;
+    m_activeDeviceName = matchedName;
 
     if (!m_pCurrentDevice) {
         AddLog("Device not found: " + Utils::WStringToUtf8(targetNameOrSubstring));
@@ -227,11 +256,6 @@ void AudioSessionMuter::OnAudioEndpointsChanged() {
 
     if (devCallback) {
         devCallback();
-    } else {
-        std::lock_guard<std::recursive_mutex> lock(m_mutex);
-        if (!m_isAttached && !m_lastRequestedDevice.empty()) {
-            AttachToDevice(m_lastRequestedDevice);
-        }
     }
 }
 
@@ -530,18 +554,25 @@ void AudioSessionMuter::AddLog(const std::string& message, bool isAction) {
 
     m_logs.push_back(std::move(entry));
     if (m_logs.size() > 200) {
-        m_logs.erase(m_logs.begin());
+        m_logs.pop_front();
     }
+    m_logRevision++;
 }
 
 std::vector<LogEntry> AudioSessionMuter::GetLogs() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    return m_logs;
+    return std::vector<LogEntry>(m_logs.begin(), m_logs.end());
+}
+
+uint64_t AudioSessionMuter::GetLogRevision() const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    return m_logRevision;
 }
 
 void AudioSessionMuter::ClearLogs() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_logs.clear();
+    m_logRevision++;
 }
 
 HRESULT STDMETHODCALLTYPE AudioSessionNotificationHandler::OnSessionCreated(IAudioSessionControl* NewSession) {
