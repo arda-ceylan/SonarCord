@@ -83,10 +83,6 @@ void AppUI::RefreshDevices() {
         }
     }
 
-    if (m_selectedDeviceIndex == -1 && !m_devices.empty()) {
-        m_selectedDeviceIndex = 0;
-    }
-
     if (m_selectedDeviceIndex != -1 && m_selectedDeviceIndex < (int)m_devices.size()) {
         m_pMuter->AttachToDevice(m_devices[m_selectedDeviceIndex].friendlyName);
     } else {
@@ -203,7 +199,7 @@ void AppUI::RenderHeaderCard() {
     ImGui::SetCursorPos(ImVec2(12, 10));
     ImGui::TextColored(ImVec4(0.45f, 0.65f, 0.98f, 1.0f), "SonarCord");
     ImGui::SameLine();
-    ImGui::TextDisabled("v1.2");
+    ImGui::TextDisabled("v1.3");
 
     // Status Line
     ImGui::SetCursorPos(ImVec2(12, 34));
@@ -236,9 +232,14 @@ void AppUI::RenderDeviceCard() {
     ImGui::SetCursorPos(ImVec2(12, 8));
     ImGui::TextDisabled("Audio Output Device");
 
-    std::string currentItemPreview = (m_selectedDeviceIndex >= 0 && m_selectedDeviceIndex < (int)m_devices.size()) 
-        ? Utils::WStringToUtf8(m_devices[m_selectedDeviceIndex].friendlyName) 
-        : "Select audio device...";
+    std::string currentItemPreview;
+    if (m_selectedDeviceIndex >= 0 && m_selectedDeviceIndex < (int)m_devices.size()) {
+        currentItemPreview = Utils::WStringToUtf8(m_devices[m_selectedDeviceIndex].friendlyName);
+    } else if (m_pConfig && !m_pConfig->targetDeviceName.empty()) {
+        currentItemPreview = Utils::WStringToUtf8(m_pConfig->targetDeviceName) + " (Disconnected)";
+    } else {
+        currentItemPreview = "Select audio device...";
+    }
 
     ImGui::SetCursorPos(ImVec2(12, 30));
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80);
