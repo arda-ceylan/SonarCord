@@ -22,9 +22,9 @@ void AppUI::Initialize() {
 void AppUI::SyncUIFromConfig() {
     if (!m_pConfig || !m_pMuter) return;
 
-    m_isGuardEnabled = m_pConfig->isEnabled;
+    m_isMuterEnabled = m_pConfig->isEnabled;
     m_pMuter->SetAllDeviceTargets(m_pConfig->deviceTargets);
-    m_pMuter->SetEnabled(m_isGuardEnabled);
+    m_pMuter->SetEnabled(m_isMuterEnabled);
 
     m_startWithWindows = AppConfig::IsAutoStartEnabled();
     m_showNotifications = m_pConfig->showNotifications;
@@ -35,7 +35,7 @@ void AppUI::SyncUIFromConfig() {
 void AppUI::SaveConfigFromUI() {
     if (!m_pConfig || !m_pMuter) return;
 
-    m_pConfig->isEnabled = m_isGuardEnabled;
+    m_pConfig->isEnabled = m_isMuterEnabled;
     m_pConfig->startWithWindows = m_startWithWindows;
     m_pConfig->showNotifications = m_showNotifications;
     m_pConfig->startMinimized = m_startMinimized;
@@ -50,7 +50,7 @@ void AppUI::SaveConfigFromUI() {
     }
 
     AppConfig::SetAutoStart(m_startWithWindows);
-    m_pMuter->SetEnabled(m_isGuardEnabled);
+    m_pMuter->SetEnabled(m_isMuterEnabled);
 }
 
 void AppUI::RefreshDevices() {
@@ -227,7 +227,7 @@ void AppUI::RenderHeaderCard() {
 
     // Status Line
     ImGui::SetCursorPos(ImVec2(12, 34));
-    if (!m_isGuardEnabled) {
+    if (!m_isMuterEnabled) {
         ImGui::TextColored(ImVec4(0.70f, 0.72f, 0.80f, 1.0f), "○  Muter Inactive (Paused)");
     } else if (managedCount == 0) {
         ImGui::TextColored(ImVec4(0.70f, 0.72f, 0.80f, 1.0f), "○  No Devices Configured");
@@ -240,11 +240,11 @@ void AppUI::RenderHeaderCard() {
 
     // Master Enable Toggle Switch
     ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionAvail().x - 44, 12));
-    if (DrawToggleSwitch("##MasterMuterSwitch", &m_isGuardEnabled)) {
+    if (DrawToggleSwitch("##MasterMuterSwitch", &m_isMuterEnabled)) {
         SaveConfigFromUI();
     }
     ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionAvail().x - 46, 36));
-    ImGui::TextDisabled(m_isGuardEnabled ? " Active" : " Paused");
+    ImGui::TextDisabled(m_isMuterEnabled ? " Active" : " Paused");
 
     ImGui::EndChild();
 }

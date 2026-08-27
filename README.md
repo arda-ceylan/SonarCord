@@ -33,10 +33,12 @@ As soon as Discord (or any user-defined application) spawns an audio playback se
 ## ✨ Key Features
 
 * 🚀 **Zero CPU & Ultra-Low Memory:** Consumes **0.0% CPU** and **~15 MB RAM** when running in the background.
+* 🎧 **Multi-Device Audio Muter:** Monitor and mute target audio sessions across multiple virtual or physical audio output devices simultaneously (e.g., *Sonar - Microphone*, *Sonar - Aux*) with independent per-device mute rules.
 * ⚡ **Event-Driven WASAPI Architecture:** No polling loops or CPU spinlocks; wakes up only when an audio session is created or modified.
-* 🔊 **Seamless Auto-Unmute:** Automatically restores audio volume when an application is untoggled or when the master muter is paused.
-* 🎨 **Fluent Modern Dark UI:** Hardware-accelerated DirectX 11 + Dear ImGui interface.
-* 📥 **System Tray Native:** Seamlessly hides to the tray, Windows toast notifications and auto-start on Windows boot.
+* 🔌 **Dynamic Hotplug & Self-Healing:** Automatically detects device plug/unplug events and seamlessly recovers from virtual audio driver reloads.
+* 🔊 **Seamless Auto-Unmute & Unmute on Exit:** Automatically restores audio volume when an application is untoggled, when paused, or upon app exit.
+* 🎨 **Fluent Modern Dark UI:** Hardware-accelerated DirectX 11 + Dear ImGui interface with color-coded device status indicators.
+* 📥 **System Tray Native:** Seamlessly hides to the tray with rich Windows toast notifications and optional auto-start on boot.
 * 🎛️ **Multi-App Target Filtering:** Intercept multiple applications simultaneously (Discord, Spotify, games, etc.) with clickable interactive tiles or manual process entry.
 
 ---
@@ -51,7 +53,7 @@ As soon as Discord (or any user-defined application) spawns an audio playback se
                                      ▼
                      ┌───────────────────────────────┐
                      │    SonarCord Core Engine      │
-                     │  (MTA Thread / Event-Driven)  │
+                     │  (WASAPI COM / Event-Driven)  │
                      └───────────────┬───────────────┘
                                      │
             Matches Target Process?  ├───────────────┐
@@ -66,10 +68,10 @@ As soon as Discord (or any user-defined application) spawns an audio playback se
           [ Echo Eliminated! 🔇 ]
 ```
 
-1. Registers an `IAudioSessionNotification` handler with the target audio endpoint.
+1. Registers an `IAudioSessionNotification` handler with each configured audio endpoint.
 2. COM callbacks invoke `OnSessionCreated` instantly upon any new audio stream.
 3. Automatically evaluates the caller's process ID (PID) and executable name via `QueryFullProcessImageNameW`.
-4. If matched, issues an atomic `ISimpleAudioVolume::SetMute(TRUE)` call.
+4. If matched on the corresponding audio device, issues an atomic `ISimpleAudioVolume::SetMute(TRUE)` call.
 
 ---
 
@@ -77,7 +79,7 @@ As soon as Discord (or any user-defined application) spawns an audio playback se
 
 1. Download the latest `SonarCord.exe` from the [Releases](https://github.com/arda-ceylan/SonarCord/releases) section.
 2. Run `SonarCord.exe`.
-3. Select your audio device (e.g., *SteelSeries Sonar - Microphone*), toggle **Active**, and click to arm the applications you want to mute.
+3. Select your audio device(s) (e.g., *SteelSeries Sonar - Microphone*), toggle **Active**, and click to arm the applications you want to mute.
 4. Minimize to tray and enjoy crystal-clear streams without echoes!
 
 ---

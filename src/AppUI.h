@@ -33,7 +33,7 @@ private:
     int m_selectedDeviceIndex = -1;
     char m_customAppInputBuffer[128] = "";
 
-    bool m_isGuardEnabled = false;
+    bool m_isMuterEnabled = false;
     bool m_startWithWindows = false;
     bool m_showNotifications = true;
     bool m_startMinimized = false;

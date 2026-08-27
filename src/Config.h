@@ -18,7 +18,7 @@
 #pragma comment(lib, "Advapi32.lib")
 
 struct AppConfig {
-    bool isEnabled = false; // Master Guard Switch (disabled by default)
+    bool isEnabled = false; // Master Muter Switch (disabled by default)
     bool startWithWindows = false;
     bool showNotifications = true;
     bool startMinimized = false;
