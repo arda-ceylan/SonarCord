@@ -23,8 +23,8 @@ void AppUI::SyncUIFromConfig() {
     if (!m_pConfig || !m_pMuter) return;
 
     m_isGuardEnabled = m_pConfig->isEnabled;
+    m_pMuter->SetAllDeviceTargets(m_pConfig->deviceTargets);
     m_pMuter->SetEnabled(m_isGuardEnabled);
-    m_pMuter->SetTargetProcess(m_pConfig->targetProcessName);
 
     m_startWithWindows = AppConfig::IsAutoStartEnabled();
     m_showNotifications = m_pConfig->showNotifications;
@@ -36,15 +36,14 @@ void AppUI::SaveConfigFromUI() {
     if (!m_pConfig || !m_pMuter) return;
 
     m_pConfig->isEnabled = m_isGuardEnabled;
-    if (m_selectedDeviceIndex >= 0 && m_selectedDeviceIndex < (int)m_devices.size()) {
-        m_pConfig->targetDeviceName = m_devices[m_selectedDeviceIndex].friendlyName;
-    }
-
-    m_pConfig->targetProcessName = m_pMuter->GetTargetProcess();
     m_pConfig->startWithWindows = m_startWithWindows;
     m_pConfig->showNotifications = m_showNotifications;
     m_pConfig->startMinimized = m_startMinimized;
     m_pConfig->unmuteOnExit = m_unmuteOnExit;
+
+    if (m_selectedDeviceIndex >= 0 && m_selectedDeviceIndex < (int)m_devices.size()) {
+        m_pConfig->lastSelectedDevice = m_devices[m_selectedDeviceIndex].friendlyName;
+    }
 
     if (!m_pConfig->Save()) {
         m_pMuter->AddLog("ERROR: Failed to save config to disk!");
@@ -57,36 +56,60 @@ void AppUI::SaveConfigFromUI() {
 void AppUI::RefreshDevices() {
     if (!m_pMuter) return;
 
+    m_pMuter->SyncManagedDevicesWithSystem();
     m_devices = m_pMuter->EnumerateRenderDevices();
-    m_selectedDeviceIndex = -1;
 
-    std::wstring targetToFind = m_pConfig ? m_pConfig->targetDeviceName : L"Sonar - Microphone";
-    std::wstring lowerTarget = Utils::ToLower(targetToFind);
-
-    // Pass 1: Exact case-insensitive match
-    for (int i = 0; i < (int)m_devices.size(); ++i) {
-        std::wstring lowerDev = Utils::ToLower(m_devices[i].friendlyName);
-        if (lowerDev == lowerTarget) {
-            m_selectedDeviceIndex = i;
-            break;
+    // Include any configured/managed devices that are currently offline so they appear in dropdown
+    auto managedNames = m_pMuter->GetManagedDeviceNames();
+    for (const auto& mName : managedNames) {
+        bool alreadyInList = false;
+        std::wstring lowerM = Utils::ToLower(mName);
+        for (const auto& dev : m_devices) {
+            std::wstring lowerDev = Utils::ToLower(dev.friendlyName);
+            if (lowerDev == lowerM || lowerDev.find(lowerM) != std::wstring::npos) {
+                alreadyInList = true;
+                break;
+            }
+        }
+        if (!alreadyInList) {
+            AudioDeviceInfo offlineDev;
+            offlineDev.id = L"";
+            offlineDev.friendlyName = mName;
+            m_devices.push_back(offlineDev);
         }
     }
 
-    // Pass 2: Fallback to substring match
-    if (m_selectedDeviceIndex == -1) {
+    // Preserve previously selected device if possible
+    std::wstring targetToFind = L"";
+    if (m_selectedDeviceIndex >= 0 && m_selectedDeviceIndex < (int)m_devices.size()) {
+        targetToFind = m_devices[m_selectedDeviceIndex].friendlyName;
+    } else if (m_pConfig && !m_pConfig->lastSelectedDevice.empty()) {
+        targetToFind = m_pConfig->lastSelectedDevice;
+    }
+
+    m_selectedDeviceIndex = -1;
+    if (!targetToFind.empty()) {
+        std::wstring lowerTarget = Utils::ToLower(targetToFind);
         for (int i = 0; i < (int)m_devices.size(); ++i) {
             std::wstring lowerDev = Utils::ToLower(m_devices[i].friendlyName);
-            if (lowerDev.find(lowerTarget) != std::wstring::npos) {
+            if (lowerDev == lowerTarget) {
                 m_selectedDeviceIndex = i;
                 break;
             }
         }
+        if (m_selectedDeviceIndex == -1) {
+            for (int i = 0; i < (int)m_devices.size(); ++i) {
+                std::wstring lowerDev = Utils::ToLower(m_devices[i].friendlyName);
+                if (lowerDev.find(lowerTarget) != std::wstring::npos) {
+                    m_selectedDeviceIndex = i;
+                    break;
+                }
+            }
+        }
     }
 
-    if (m_selectedDeviceIndex != -1 && m_selectedDeviceIndex < (int)m_devices.size()) {
-        m_pMuter->AttachToDevice(m_devices[m_selectedDeviceIndex].friendlyName);
-    } else {
-        m_pMuter->Detach();
+    if (m_selectedDeviceIndex == -1 && !m_devices.empty()) {
+        m_selectedDeviceIndex = 0;
     }
 }
 
@@ -193,26 +216,26 @@ void AppUI::ApplyModernDarkTheme() {
 void AppUI::RenderHeaderCard() {
     ImGui::BeginChild("HeaderCard", ImVec2(0, 64), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     
-    bool isAttached = m_pMuter && m_pMuter->IsAttached();
+    int managedCount = m_pMuter ? m_pMuter->GetManagedDeviceCount() : 0;
+    int connectedCount = m_pMuter ? m_pMuter->GetConnectedManagedDeviceCount() : 0;
 
     // Title & Version
     ImGui::SetCursorPos(ImVec2(12, 10));
     ImGui::TextColored(ImVec4(0.45f, 0.65f, 0.98f, 1.0f), "SonarCord");
     ImGui::SameLine();
-    ImGui::TextDisabled("v1.3");
+    ImGui::TextDisabled("v1.4");
 
     // Status Line
     ImGui::SetCursorPos(ImVec2(12, 34));
     if (!m_isGuardEnabled) {
         ImGui::TextColored(ImVec4(0.70f, 0.72f, 0.80f, 1.0f), "○  Muter Inactive (Paused)");
-    } else if (isAttached) {
-        ImGui::TextColored(ImVec4(0.28f, 0.88f, 0.45f, 1.0f), "●  Active (Listening)");
-        ImGui::SameLine();
-        std::string devName = Utils::WStringToUtf8(m_pMuter->GetActiveDeviceName());
-        if (devName.length() > 24) devName = devName.substr(0, 22) + "..";
-        ImGui::TextDisabled("•  %s", devName.c_str());
+    } else if (managedCount == 0) {
+        ImGui::TextColored(ImVec4(0.70f, 0.72f, 0.80f, 1.0f), "○  No Devices Configured");
+    } else if (connectedCount == managedCount) {
+        ImGui::TextColored(ImVec4(0.28f, 0.88f, 0.45f, 1.0f), "●  Active (%d/%d Devices Muted)", connectedCount, managedCount);
     } else {
-        ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "●  Waiting for Device");
+        int offline = managedCount - connectedCount;
+        ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.20f, 1.0f), "●  Waiting for %d Device%s", offline, offline > 1 ? "s" : "");
     }
 
     // Master Enable Toggle Switch
@@ -229,16 +252,30 @@ void AppUI::RenderHeaderCard() {
 void AppUI::RenderDeviceCard() {
     ImGui::BeginChild("DeviceCard", ImVec2(0, 68), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     
+    int managedCount = m_pMuter ? m_pMuter->GetManagedDeviceCount() : 0;
+    int connectedCount = m_pMuter ? m_pMuter->GetConnectedManagedDeviceCount() : 0;
+
     ImGui::SetCursorPos(ImVec2(12, 8));
     ImGui::TextDisabled("Audio Output Device");
+    if (managedCount > 0) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.45f, 0.65f, 0.98f, 1.0f), "• %d Configured (%d Active)", managedCount, connectedCount);
+    }
 
-    std::string currentItemPreview;
+    std::string currentItemPreview = "Select audio device...";
     if (m_selectedDeviceIndex >= 0 && m_selectedDeviceIndex < (int)m_devices.size()) {
-        currentItemPreview = Utils::WStringToUtf8(m_devices[m_selectedDeviceIndex].friendlyName);
-    } else if (m_pConfig && !m_pConfig->targetDeviceName.empty()) {
-        currentItemPreview = Utils::WStringToUtf8(m_pConfig->targetDeviceName) + " (Disconnected)";
-    } else {
-        currentItemPreview = "Select audio device...";
+        std::wstring curDevW = m_devices[m_selectedDeviceIndex].friendlyName;
+        bool isCurManaged = m_pMuter && m_pMuter->IsDeviceManaged(curDevW);
+        bool isCurConnected = m_pMuter && m_pMuter->IsDeviceConnected(curDevW);
+        if (isCurManaged) {
+            if (isCurConnected) {
+                currentItemPreview = "● " + Utils::WStringToUtf8(curDevW);
+            } else {
+                currentItemPreview = "○ " + Utils::WStringToUtf8(curDevW);
+            }
+        } else {
+            currentItemPreview = Utils::WStringToUtf8(curDevW);
+        }
     }
 
     ImGui::SetCursorPos(ImVec2(12, 30));
@@ -246,13 +283,36 @@ void AppUI::RenderDeviceCard() {
     if (ImGui::BeginCombo("##AudioDevicesCombo", currentItemPreview.c_str())) {
         for (int i = 0; i < (int)m_devices.size(); i++) {
             bool isSelected = (m_selectedDeviceIndex == i);
-            std::string devName = Utils::WStringToUtf8(m_devices[i].friendlyName);
+            std::wstring devWName = m_devices[i].friendlyName;
+            std::string devName = Utils::WStringToUtf8(devWName);
 
-            if (ImGui::Selectable(devName.c_str(), isSelected)) {
+            bool isManaged = m_pMuter && m_pMuter->IsDeviceManaged(devWName);
+            bool isConnected = m_pMuter && m_pMuter->IsDeviceConnected(devWName);
+
+            std::string label;
+            ImVec4 textColor = ImVec4(0.92f, 0.94f, 0.97f, 1.0f);
+
+            if (isManaged) {
+                if (isConnected) {
+                    label = "●  " + devName;
+                    textColor = ImVec4(0.28f, 0.88f, 0.45f, 1.0f); // Green
+                } else {
+                    label = "○  " + devName;
+                    textColor = ImVec4(0.95f, 0.60f, 0.20f, 1.0f); // Orange / Amber
+                }
+            } else {
+                label = "   " + devName;
+                textColor = ImVec4(0.70f, 0.72f, 0.80f, 1.0f); // Neutral
+            }
+
+            ImGui::PushStyleColor(ImGuiCol_Text, textColor);
+            if (ImGui::Selectable(label.c_str(), isSelected)) {
                 m_selectedDeviceIndex = i;
-                m_pMuter->AttachToDevice(m_devices[i].friendlyName);
+                m_cachedSessions.clear(); // Force immediate session update for new selection
                 SaveConfigFromUI();
             }
+            ImGui::PopStyleColor();
+
             if (isSelected) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
@@ -271,10 +331,37 @@ void AppUI::RenderDeviceCard() {
 void AppUI::RenderAppsCard() {
     ImGui::BeginChild("AppsCard", ImVec2(0, 150), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     
-    ImGui::SetCursorPos(ImVec2(12, 8));
-    ImGui::TextDisabled("Applications (Click to toggle mute)");
+    std::wstring currentDevName = L"";
+    if (m_selectedDeviceIndex >= 0 && m_selectedDeviceIndex < (int)m_devices.size()) {
+        currentDevName = m_devices[m_selectedDeviceIndex].friendlyName;
+    }
 
-    // Collect unified application list: Active sessions + configured targets
+    bool isCurrentManaged = m_pMuter && !currentDevName.empty() && m_pMuter->IsDeviceManaged(currentDevName);
+    bool isCurrentConnected = m_pMuter && !currentDevName.empty() && m_pMuter->IsDeviceConnected(currentDevName);
+    auto targetList = (m_pMuter && !currentDevName.empty()) ? m_pMuter->GetDeviceTargets(currentDevName) : std::vector<std::wstring>();
+    int targetCount = (int)targetList.size();
+
+    ImGui::SetCursorPos(ImVec2(12, 8));
+    if (!currentDevName.empty()) {
+        std::string devNameUtf8 = Utils::WStringToUtf8(currentDevName);
+        if (devNameUtf8.length() > 22) devNameUtf8 = devNameUtf8.substr(0, 20) + "..";
+        ImGui::TextDisabled("Applications for [%s]", devNameUtf8.c_str());
+
+        ImGui::SameLine();
+        if (targetCount > 0) {
+            if (isCurrentConnected) {
+                ImGui::TextColored(ImVec4(0.28f, 0.88f, 0.45f, 1.0f), "• %d %s Muted", targetCount, targetCount > 1 ? "Apps" : "App");
+            } else {
+                ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.20f, 1.0f), "• %d %s Muted (Waiting)", targetCount, targetCount > 1 ? "Apps" : "App");
+            }
+        } else {
+            ImGui::TextDisabled("• No rules");
+        }
+    } else {
+        ImGui::TextDisabled("Applications (Select a device above)");
+    }
+
+    // Collect unified application list: Active sessions on selected device + configured targets
     struct DisplayApp {
         std::wstring name;
         bool isTarget;
@@ -285,15 +372,18 @@ void AppUI::RenderAppsCard() {
 
     m_sessionUpdateTimer += ImGui::GetIO().DeltaTime;
     if (m_sessionUpdateTimer >= 1.0f || m_cachedSessions.empty()) {
-        if (m_pMuter) m_cachedSessions = m_pMuter->GetActiveSessions();
+        if (m_pMuter && !currentDevName.empty()) {
+            m_cachedSessions = m_pMuter->GetActiveSessions(currentDevName);
+        } else {
+            m_cachedSessions.clear();
+        }
         m_sessionUpdateTimer = 0.0f;
     }
 
-    if (m_pMuter) {
+    if (m_pMuter && !currentDevName.empty()) {
         const auto& activeSessions = m_cachedSessions;
-        auto targetList = m_pMuter->GetTargetProcessList();
 
-        // 1. Add active sessions
+        // 1. Add active sessions on this device
         for (const auto& sess : activeSessions) {
             if (sess.processName == L"System/Unknown") continue;
             displayList.push_back({ sess.processName, sess.isTarget, true, sess.pid });
@@ -317,7 +407,10 @@ void AppUI::RenderAppsCard() {
     // Clickable interactive tiles list
     ImGui::SetCursorPos(ImVec2(10, 28));
     ImGui::BeginChild("AppsList", ImVec2(0, 76), false);
-    if (displayList.empty()) {
+    if (currentDevName.empty()) {
+        ImGui::SetCursorPosY(22);
+        ImGui::TextDisabled("   Please select an audio device above.");
+    } else if (displayList.empty()) {
         ImGui::SetCursorPosY(22);
         ImGui::TextDisabled("   No active audio streams. Add applications below.");
     } else {
@@ -332,9 +425,17 @@ void AppUI::RenderAppsCard() {
 
             if (ImGui::InvisibleButton("##AppRow", ImVec2(itemWidth, itemHeight))) {
                 if (app.isTarget) {
-                    m_pMuter->RemoveTargetProcess(app.name);
+                    m_pMuter->RemoveTargetProcess(currentDevName, app.name);
+                    auto updated = m_pMuter->GetDeviceTargets(currentDevName);
+                    if (updated.empty()) {
+                        m_pConfig->deviceTargets.erase(currentDevName);
+                        RefreshDevices();
+                    } else {
+                        m_pConfig->deviceTargets[currentDevName] = updated;
+                    }
                 } else {
-                    m_pMuter->AddTargetProcess(app.name);
+                    m_pMuter->AddTargetProcess(currentDevName, app.name);
+                    m_pConfig->deviceTargets[currentDevName] = m_pMuter->GetDeviceTargets(currentDevName);
                 }
                 SaveConfigFromUI();
             }
@@ -399,11 +500,10 @@ void AppUI::RenderAppsCard() {
     ImGui::SameLine();
     if (ImGui::Button("+ Add", ImVec2(64, 0))) {
         std::string appStr = m_customAppInputBuffer;
-        if (!appStr.empty()) {
-            if (m_pMuter) {
-                m_pMuter->AddTargetProcess(Utils::Utf8ToWString(appStr));
-                SaveConfigFromUI();
-            }
+        if (!appStr.empty() && !currentDevName.empty() && m_pMuter) {
+            m_pMuter->AddTargetProcess(currentDevName, Utils::Utf8ToWString(appStr));
+            m_pConfig->deviceTargets[currentDevName] = m_pMuter->GetDeviceTargets(currentDevName);
+            SaveConfigFromUI();
             m_customAppInputBuffer[0] = '\0';
         }
     }

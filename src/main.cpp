@@ -49,6 +49,7 @@ using Microsoft::WRL::ComPtr;
 
 // Notification payload sent from background MTA thread to STA UI thread
 struct MuteNotificationPayload {
+    std::wstring devName;
     std::wstring procName;
     DWORD pid = 0;
 };
@@ -187,12 +188,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         if (hSingleInstanceMutex) CloseHandle(hSingleInstanceMutex);
         return 1;
     }
-    muter.SetTargetProcess(config.targetProcessName);
 
     // Notification Callback: Post to UI thread to guarantee COM/Tray thread-safety
-    muter.SetNotificationCallback([](const std::wstring& procName, DWORD pid) {
+    muter.SetNotificationCallback([](const std::wstring& devName, const std::wstring& procName, DWORD pid) {
         if (g_hWnd) {
-            auto* payload = new MuteNotificationPayload{ procName, pid };
+            auto* payload = new MuteNotificationPayload{ devName, procName, pid };
             if (PostMessageW(g_hWnd, WM_APP_MUTE_NOTIFY, reinterpret_cast<WPARAM>(payload), 0) == 0) {
                 delete payload;
             }
@@ -444,7 +444,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_APP_MUTE_NOTIFY: {
         auto* payload = reinterpret_cast<MuteNotificationPayload*>(wParam);
         if (payload) {
-            std::wstring msgText = payload->procName + L" (PID: " + std::to_wstring(payload->pid) + L") session was automatically muted.";
+            std::wstring msgText = payload->procName + L" muted on " + payload->devName;
             ShowTrayNotification(L"SonarCord", msgText);
             delete payload;
         }
